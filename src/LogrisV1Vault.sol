@@ -19,8 +19,6 @@ contract LogrisV1Vault is ERC4626 {
         return super.deposit(assets, receiver);
     }
 
-    
-
     modifier onlyLogris() {
         require(msg.sender == logris, "Only Logris can deposit");
         _;
