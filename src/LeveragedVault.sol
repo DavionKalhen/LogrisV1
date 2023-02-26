@@ -14,11 +14,11 @@ contract LeveragedVault is ERC4626 {
         owner = _owner;
     }
 
-    function deposit(uint256 assets, address receiver) public virtual override onlyowner returns (uint256) {
+    function deposit(uint256 assets, address receiver) public virtual override onlyOwner returns (uint256) {
         return super.deposit(assets, receiver);
     }
 
-    modifier onlyowner() {
+    modifier onlyOwner() {
         require(msg.sender == owner, "Only owner can call this function");
         _;
     }
