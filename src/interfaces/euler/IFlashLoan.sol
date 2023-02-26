@@ -1,7 +1,7 @@
 pragma solidity >=0.5.0;
 pragma abicoder v2;
 
-// Mainnet imeplementation: 0x07df2ad9878f8797b4055230bbae5c808b8259b3
+// Mainnet imeplementation: 0x07df2ad9878F8797B4055230bbAE5C808b8259b3
 // requires an onFlashLoan callback method
 //function onFlashLoan(address initiator, address token, uint256 amount, uint256 fee, bytes calldata data) external returns (bytes32) {
 //   require(initiator == self, "only I can initiate a flash loan");

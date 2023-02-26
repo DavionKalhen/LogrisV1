@@ -4,4 +4,4 @@ build:
 	forge build
 
 test:
-	forge test --fork-url ${ALCHEMY_KEY}
+	forge test --fork-url ${ALCHEMY_KEY} -vv
