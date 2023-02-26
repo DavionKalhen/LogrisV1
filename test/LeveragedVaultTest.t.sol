@@ -4,16 +4,16 @@ import "forge-std/Test.sol";
 
 import "../src/interfaces/alchemist/IAlchemistV2.sol";
 import "../src/interfaces/iDai.sol";
-import "../src/LogrisV1.sol";
+import "../src/LeveragedVault.sol";
 import "../lib/openzeppelin-contracts/contracts/token/ERC20/IERC20.sol";
 import "../src/interfaces/uniswap/IUniswapV2Router02.sol";
-import "../src/interfaces/ILogrisV1Vault.sol";
+import "../src/interfaces/ILeveragedVault.sol";
 import "../src/interfaces/alchemist/Whitelist.sol";
 
-contract TestContract is Test {
+contract LeveragedVaultTest is Test {
 
     IAlchemistV2 alchemist;
-    LogrisV1 logris;
+    LeveragedVault owner;
     iDAI dai;
     address user1;
     address daiOwner = 0xdDb108893104dE4E1C6d0E47c42237dB4E617ACc;
@@ -27,8 +27,9 @@ contract TestContract is Test {
         
         alchemist = IAlchemistV2(0xde399d26ed46B7b509561f1B9B5Ad6cc1EBC7261);
         address alchemixOwner = alchemist.admin();
-        logris = new LogrisV1();
         dai = iDAI(0x6B175474E89094C44Da98b954EedeAC495271d0F);
+        new LeveragedVault(alchemixOwner, address(dai));
+        
         vm.deal(user1, 200 ether);
         console.log("Setting path");
         address[] memory path = new address[](2);
@@ -49,6 +50,7 @@ contract TestContract is Test {
         assertGt(dai.balanceOf(vm.addr(1)), 100 ether);
     }
 
+<<<<<<< HEAD:test/LogrisV1.t.sol
     function testCanCreateVault() public {
         logris.createVault(address(dai));
     }
@@ -68,4 +70,17 @@ contract TestContract is Test {
         assertEq(vault.totalAssets(), 100 ether);
         assertGt(vault.balanceOf(user1), 0);
     }
+=======
+    // function testCanCreateVault() public {
+    //     owner.createVault(address(dai));
+    // }
+
+    // function testDepositToVault() public {
+    //     owner.createVault(address(dai));
+    //     dai.approve(address(owner), 100 ether);
+    //     owner.deposit(address(dai), 100 ether);
+    //     ILeveragedVault vault = ILeveragedVault(owner.vaults(address(dai)));
+    //     assertEq(vault.totalAssets(), 100 ether);
+    // }
+>>>>>>> origin/LogrisV1-rename:test/LeveragedVaultTest.t.sol
 }

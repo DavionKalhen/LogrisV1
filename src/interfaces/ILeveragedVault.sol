@@ -1,5 +1,7 @@
 import "lib/openzeppelin-contracts/contracts/interfaces/IERC4626.sol";
 
-interface ILogrisV1Vault is IERC4626 {
+pragma solidity ^0.8.0;
+
+interface ILeveragedVault is IERC4626 {
 
 }
