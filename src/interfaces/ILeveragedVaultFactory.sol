@@ -2,7 +2,7 @@
 
 pragma solidity ^0.8.0;
 
-interface ILogrisV1 {
+interface ILeveragedVaultFactory {
     event Deposit(address indexed account, address indexed token, uint256 amount);
     event Withdraw(address indexed account, address indexed token, uint256 amount);
     event Mint(address indexed account, address indexed token, uint256 amount);

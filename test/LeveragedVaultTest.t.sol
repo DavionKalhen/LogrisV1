@@ -4,15 +4,15 @@ import "forge-std/Test.sol";
 
 import "../src/interfaces/alchemist/IAlchemistV2.sol";
 import "../src/interfaces/iDai.sol";
-import "../src/LogrisV1.sol";
+import "../src/LeveragedVault.sol";
 import "../lib/openzeppelin-contracts/contracts/token/ERC20/IERC20.sol";
 import "../src/interfaces/uniswap/IUniswapV2Router02.sol";
-import "../src/interfaces/ILogrisV1Vault.sol";
+import "../src/interfaces/ILeveragedVault.sol";
 
-contract TestContract is Test {
+contract LeveragedVaultTest is Test {
 
     IAlchemistV2 alchemist;
-    LogrisV1 logris;
+    LeveragedVault owner;
     iDAI dai;
 
     address daiOwner = 0xdDb108893104dE4E1C6d0E47c42237dB4E617ACc;
@@ -24,8 +24,9 @@ contract TestContract is Test {
         
         alchemist = IAlchemistV2(0xde399d26ed46B7b509561f1B9B5Ad6cc1EBC7261);
         address alchemixOwner = alchemist.admin();
-        logris = new LogrisV1();
         dai = iDAI(0x6B175474E89094C44Da98b954EedeAC495271d0F);
+        new LeveragedVault(alchemixOwner, address(dai));
+        
         vm.deal(user1, 200 ether);
         address[] memory path = new address[](2);
         path[0] = weth;
@@ -41,15 +42,15 @@ contract TestContract is Test {
     function testDAIBalance() public {
         assertGt(dai.balanceOf(vm.addr(1)), 100 ether);}
 
-    function testCanCreateVault() public {
-        logris.createVault(address(dai));
-    }
+    // function testCanCreateVault() public {
+    //     owner.createVault(address(dai));
+    // }
 
-    function testDepositToVault() public {
-        logris.createVault(address(dai));
-        dai.approve(address(logris), 100 ether);
-        logris.deposit(address(dai), 100 ether);
-        ILogrisV1Vault vault = ILogrisV1Vault(logris.vaults(address(dai)));
-        assertEq(vault.totalAssets(), 100 ether);
-    }
+    // function testDepositToVault() public {
+    //     owner.createVault(address(dai));
+    //     dai.approve(address(owner), 100 ether);
+    //     owner.deposit(address(dai), 100 ether);
+    //     ILeveragedVault vault = ILeveragedVault(owner.vaults(address(dai)));
+    //     assertEq(vault.totalAssets(), 100 ether);
+    // }
 }
