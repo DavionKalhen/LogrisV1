@@ -8,7 +8,6 @@ import "../src/interfaces/euler/DToken.sol";
 import "../src/interfaces/euler/Markets.sol";
 
 contract FlashLoanTest is Test, IFlashLoan  {
-    address receiver;
     address wethAddress = 0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2;
     address eulerMarketsAddress = 0x3520d5a913427E6F0D6A83E07ccD4A4da316e4d3;
 
