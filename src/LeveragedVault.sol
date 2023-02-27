@@ -10,11 +10,11 @@ contract LeveragedVault is ERC4626, Ownable {
     Leverager public leverager;
     mapping(address => uint256) public deposited;
 
-    constructor(address _token)
+    constructor(address _token, address _wrapper)
     ERC4626(IERC20(_token))
     //these strings should be provided by the factory if you want this contract to be reusable
     ERC20("Alchemix Leveraged Vault WETH", "lvyvETH") {
-        leverager = new Leverager(_token);
+        leverager = new Leverager(_wrapper);
     }
 
     function deposit(uint256 assets, address receiver) public virtual override onlyOwner returns (uint256) {

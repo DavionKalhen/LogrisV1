@@ -12,7 +12,7 @@ contract Leverager is Ownable {
     uint256 public heldAssets;
     uint256 public borrowedAssets;
     IAlchemistV2 public alchemist;
-    address underlyingToken;
+    address yieldToken;
 
     struct Account {
         // A signed value which represents the current amount of debt or credit that the account has accrued.
@@ -30,10 +30,10 @@ contract Leverager is Ownable {
         mapping(address => mapping(address => uint256)) withdrawAllowances;
     }
 
-    constructor(address underlyingToken_) {
-        alchemist = IAlchemistV2(0xde399d26ed46B7b509561f1B9B5Ad6cc1EBC7261);
-        underlyingToken = underlyingToken_;
-    }
+    constructor(address yieldToken_) {
+        alchemist = IAlchemistV2(0x5C6374a2ac4EBC38DeA0Fc1F8716e5Ea1AdD94dd);
+        yieldToken = yieldToken_;
+}
 
     function addAssets(uint _assets) external onlyOwner {
         heldAssets += _assets;
@@ -52,8 +52,9 @@ contract Leverager is Ownable {
 
     function leverage() external onlyOwner {
         require(heldAssets > 0, "No assets to leverage");
+        IAlchemistV2.YieldTokenParams memory yieldTokenParams = alchemist.getYieldTokenParameters(yieldToken);
         //deposit as much as we can.
-        //alchemist.depositUnderlying( yieldToken, heldAssets, address(this), heldAssets);
+        alchemist.depositUnderlying(yieldToken, heldAssets, address(this), heldAssets);
         //Check our debt ratio
          if(validateDebtRatio()) {
              //If we are undercollateralized, mint more yield tokens
