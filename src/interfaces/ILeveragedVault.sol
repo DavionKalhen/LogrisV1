@@ -20,8 +20,9 @@ interface ILeveragedVault is IERC4626 {
     function getVaultDepositedBalance() external view returns(uint amount);
     function getVaultDebtBalance() external view returns(uint amount);
     function getVaultRedeemableBalance() external view returns(uint amount);
+    function convertYieldTokensToShares(uint256 amount) external view returns (uint256 shares);
+    function convertSharesToYieldTokens(uint256 shares) external view returns (uint256 amount);
     function deposit(uint amount) external returns(uint shares);
-    function predictWithdraw(uint shares) external view returns(uint amount);
     function withdraw(uint shares) external returns(uint amount);
     function leverage() external;
 }
