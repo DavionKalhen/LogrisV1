@@ -33,7 +33,7 @@ contract Leverager is Ownable {
     constructor(address yieldToken_) {
         alchemist = IAlchemistV2(0x5C6374a2ac4EBC38DeA0Fc1F8716e5Ea1AdD94dd);
         yieldToken = yieldToken_;
-}
+    }
 
     function addAssets(uint _assets) external onlyOwner {
         heldAssets += _assets;
@@ -50,6 +50,18 @@ contract Leverager is Ownable {
         return debtRatio < minimumCollateralization;
     }
 
+    /*
+        We need to detect the state we are under relative to the available deposit ceiling.
+        In order:
+        1) The Alchemix vault is full.
+        2) The vault does not have enough deposit capacity even for our deposit pool
+            a) We just fill up the pool. No flashloan or mint.
+        3) The vault can hold all the deposit pool but not full leverage
+            a) We calculate the maximum capacity
+            b) We secure flash loan of reduced size
+            c) mint/trade repay flash loan
+        4) The vault has capacity for maximum leverage. Flow as normal.
+    */
     function leverage() external onlyOwner {
         require(heldAssets > 0, "No assets to leverage");
         IAlchemistV2.YieldTokenParams memory yieldTokenParams = alchemist.getYieldTokenParameters(yieldToken);
@@ -62,8 +74,8 @@ contract Leverager is Ownable {
              console.log("Minting more yield tokens");
          }
          else console.log("Nothing to mint");
-
     }
+
     function totalValue(address [] memory values) internal view returns (uint256 totalValue_) {
 
         for (uint256 i = 0; i < values.length; i++) {
