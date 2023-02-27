@@ -19,7 +19,7 @@ contract LeveragedVaultFactory is ILeveragedVaultFactory, ReentrancyGuard, Ownab
 
     function createVault(address _token) external onlyOwner returns (address) {
         require(vaults[_token] == address(0), "Vault already exists");
-        address vault = address(new LeveragedVault(address(this), _token));
+        address vault = address(new LeveragedVault(_token));
         IERC20(_token).approve(vault, type(uint256).max);
         vaults[_token] = vault;
         return vault;
