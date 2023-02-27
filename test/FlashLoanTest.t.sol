@@ -4,28 +4,36 @@ import "forge-std/Test.sol";
 
 import "../lib/openzeppelin-contracts/contracts/token/ERC20/IERC20.sol";
 import "../src/interfaces/euler/IFlashLoan.sol";
+import "../src/interfaces/euler/DToken.sol";
+import "../src/interfaces/euler/Markets.sol";
 
-contract FlashLoanTest is Test {
+contract FlashLoanTest is Test, IFlashLoan  {
     address receiver;
     address wethAddress = 0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2;
-    IFlashLoan flashlender = IFlashLoan(0x07df2ad9878F8797B4055230bbAE5C808b8259b3);
-    bytes myCallData;
+    address eulerMarketsAddress = 0x3520d5a913427E6F0D6A83E07ccD4A4da316e4d3;
+
+    uint flashloanAmount;
+    bytes testData;
+    Markets markets;
+    DToken dToken;
 
     function setUp() public {
-        receiver = vm.addr(1);
-        myCallData = "0x1234";
-        vm.deal(receiver, 1 ether);
+        flashloanAmount = 100;
+        testData = abi.encode(wethAddress, flashloanAmount);
+        markets = Markets(eulerMarketsAddress);
+        address dTokenAddress = markets.underlyingToDToken(wethAddress);
+        require(dTokenAddress != 0x0000000000000000000000000000000000000000, "dToken lookup fail");
+        dToken = DToken(dTokenAddress);
     }
 
-    function testFlashLoanCallback() public {
-        uint256 flashloanAmount = 100;
-        require(flashlender.flashLoan(receiver, wethAddress, flashloanAmount, myCallData), "flash loan failed");        
+    function testFlashLoan() public {
+        dToken.flashLoan(flashloanAmount, testData);
     }
 
-    function onFlashLoan(address initiator, address token, uint256 amount, uint256 fee, bytes calldata data) external returns (bytes32) {
-        require(fee == 0, "no fee allowed");
-        require(IERC20(token).balanceOf(initiator)==amount,"tokens did not arrive");
-        require(keccak256(data)==keccak256(myCallData),"calldata misformed");
-        return keccak256("ERC3156FlashBorrower.onFlashLoan");
+    function onFlashLoan(bytes memory data) external {
+        (address tokenAddress, uint amount) = abi.decode(data, (address, uint));
+        IERC20 token = IERC20(tokenAddress);
+        require(token.balanceOf(address(this))==amount, "wrong amount");
+        token.transfer(msg.sender, amount); // repay
     }
 }
