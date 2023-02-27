@@ -68,7 +68,23 @@ contract LeveragedVaultTest is Test {
         logris.deposit(address(dai), 100 ether);
         vm.stopPrank();
         ILeveragedVault vault = ILeveragedVault(logris.vaults(address(dai)));
+        uint256 heldAssets = vault.heldAssets();
+        assertEq(heldAssets, 100 ether);
         assertEq(vault.totalAssets(), 100 ether);
         assertGt(vault.balanceOf(user1), 0);
+    }
+
+    function testLeverageCall() public {
+        logris.createVault(address(dai));
+        logris.whitelistAddress(address(this));
+        vm.startPrank(user1);
+        dai.approve(address(logris), 100 ether);
+        logris.deposit(address(dai), 100 ether);
+        vm.stopPrank();
+        ILeveragedVault vault = ILeveragedVault(logris.vaults(address(dai)));
+        uint256 heldAssets = vault.heldAssets();
+        vm.prank(user1);
+        vault.leverage();
+        
     }
 }
