@@ -20,6 +20,7 @@ contract LeveragedVaultTest is Test {
     IUniswapV2Router02 uniswap;
     Whitelist whitelist;
     LeveragedVaultFactory logris;
+    address daiVaultAddress = 0xdA816459F1AB5631232FE5e97a05BBBb94970c95;
 
     function setUp() public {
         user1 = vm.addr(1);
@@ -52,7 +53,9 @@ contract LeveragedVaultTest is Test {
     }
 
     function testCanCreateVault() public {
-        logris.createVault(address(dai));
+        address ret_vault = logris.createVault(address(dai), daiVaultAddress);
+        address vault = logris.vaults(daiVaultAddress);
+        assertEq(ret_vault, vault);
     }
 
     function testWhitelisted() public {
@@ -61,14 +64,31 @@ contract LeveragedVaultTest is Test {
     }
 
     function testDepositToVault() public {
-        logris.createVault(address(dai));
+        logris.createVault(address(dai), daiVaultAddress);
         logris.whitelistAddress(address(this));
         vm.startPrank(user1);
         dai.approve(address(logris), 100 ether);
-        logris.deposit(address(dai), 100 ether);
+        logris.deposit(daiVaultAddress, 100 ether);
         vm.stopPrank();
-        ILeveragedVault vault = ILeveragedVault(logris.vaults(address(dai)));
+        ILeveragedVault vault = ILeveragedVault(logris.vaults(daiVaultAddress));
+        uint256 heldAssets = vault.heldAssets();
+        assertEq(heldAssets, 100 ether);
         assertEq(vault.totalAssets(), 100 ether);
         assertGt(vault.balanceOf(user1), 0);
+    }
+
+    function testLeverageCall() public {
+        logris.createVault(address(dai), daiVaultAddress);
+        logris.whitelistAddress(address(this));
+        vm.startPrank(user1);
+        dai.approve(address(logris), 100 ether);
+        logris.deposit(daiVaultAddress, 100 ether);
+        vm.stopPrank();
+        ILeveragedVault vault = ILeveragedVault(logris.vaults(daiVaultAddress));
+        uint256 heldAssets = vault.heldAssets();
+        vm.prank(user1);
+        vault.leverage();
+        console.log("heldAssets: %s", heldAssets);
+        
     }
 }

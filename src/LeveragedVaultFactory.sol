@@ -15,21 +15,28 @@ contract LeveragedVaultFactory is ILeveragedVaultFactory, ReentrancyGuard, Ownab
     mapping (address => address) public vaults;
     mapping (address => bool) public whitelisted_address;
     mapping (address => Account) accounts;
+    mapping (address => address) wrapperToUnderlying;
+
     constructor() {}
 
-    function createVault(address _token) external onlyOwner returns (address) {
-        require(vaults[_token] == address(0), "Vault already exists");
-        address vault = address(new LeveragedVault(address(this), _token));
+    function createVault(address _token, address _wrapper) external onlyOwner returns (address) {
+        require(vaults[_wrapper] == address(0), "Vault already exists");
+        address vault = address(new LeveragedVault(_token, _wrapper));
         IERC20(_token).approve(vault, type(uint256).max);
-        vaults[_token] = vault;
+        vaults[_wrapper] = vault;
+        wrapperToUnderlying[_wrapper] = _token;
         return vault;
     }
 
-    function deposit(address _token, uint256 _amount) external nonReentrant whitelistOnly {
-        require(vaults[_token] != address(0), "Vault does not exist");
+    function deposit(address _wrapper, uint256 _amount) external nonReentrant whitelistOnly {
+        require(vaults[_wrapper] != address(0), "Vault does not exist");
+        address _token = wrapperToUnderlying[_wrapper];
         IERC20(_token).transferFrom(msg.sender, address(this), _amount);
-        LeveragedVault(vaults[_token]).deposit(_amount, msg.sender);
-        accounts[msg.sender].balances[vaults[_token]] += _amount;
+        console.log(_token);
+        console.log("Balance :", IERC20(_token).balanceOf(address(this)));
+        IERC20(_token).approve(vaults[_wrapper], _amount);
+        LeveragedVault(vaults[_wrapper]).deposit(_amount, msg.sender);
+        accounts[msg.sender].balances[vaults[_wrapper]] += _amount;
     }
 
     function withdraw(address _token, uint256 _amount) external nonReentrant whitelistOnly {
