@@ -24,7 +24,7 @@ contract EulerCurveMetaLeveragerTest is Test {
         leverager = new EulerCurveMetaLeverager(wstETHAddress, wETHAddress, alETHAddress, eulerMarketsAddress, alchemixV2Address, alETHCurvePoolAddress, alETHPoolIndex, ethPoolIndex);
     }
 
-    function testGetMethods() public {
+    function testGetMethods() view {
         require(leverager.getYieldToken()==wstETHAddress);
         require(leverager.getUnderlyingToken()==wETHAddress);
         require(leverager.getDebtToken()==alETHAddress);
@@ -33,9 +33,15 @@ contract EulerCurveMetaLeveragerTest is Test {
         require(leverager.getDexPool()==alETHCurvePoolAddress);
     }
 
-    function testGetDepositedBalance() public {
+    function testGetDepositedBalance() view {
         address randomAccount = 0x2330eB2d92167c3b6B22690c03b508E0CA532980;
         uint256 yieldTokens = leverager.getDepositedBalance(randomAccount);
         require(yieldTokens > 0, "Deposit Balance lookup failed");
+    }
+    
+    function testGetDebtBalance() view {
+        address randomAccount = 0x2330eB2d92167c3b6B22690c03b508E0CA532980;
+        int256 debtTokens = leverager.getDebtBalance(randomAccount);
+        require(debtTokens > 0, "Debt Balance lookup failed");
     }
 }

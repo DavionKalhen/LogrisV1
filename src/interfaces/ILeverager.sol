@@ -11,7 +11,7 @@ interface ILeverager is IFlashLoan {
     function getDexPool() external view returns (address dexPool);
 
     function getDepositedBalance(address depositor) external view returns(uint amount);
-    function getDebtBalance(address depositor) external view returns(uint amount);
+    function getDebtBalance(address depositor) external view returns(int256 amount);
     function getRedeemableBalance(address depositor) external view returns(uint amount);
 
     function withdraw(uint shares) external returns(uint amount);
