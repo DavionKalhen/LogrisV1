@@ -21,11 +21,11 @@ contract LeveragedVault is ERC4626, Ownable, ILeveragedVault {
         leverager = new Leverager(_wrapper);
     }
 
-    function getYieldToken() external pure returns(address){
+    function getYieldToken() external view returns(address){
         return _yieldToken;
     }
 
-    function getUnderlyingAsset() external pure returns(address){
+    function getUnderlyingAsset() external view returns(address){
         return _underlyingAsset;
     }
 
