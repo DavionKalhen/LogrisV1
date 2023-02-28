@@ -7,4 +7,6 @@ interface IAlchemistV2Convert {
     function convertYieldTokensToUnderlying(address yieldToken, uint256 amount) external view returns (uint256);
     function convertUnderlyingTokensToYield(address yieldToken, uint256 amount) external view returns (uint256);
     function convertUnderlyingTokensToShares(address yieldToken, uint256 amount) external view returns (uint256);
+    function normalizeUnderlyingTokensToDebt(address underlyingToken, uint256 amount) external view returns (uint256);
+    function normalizeDebtTokensToUnderlying(address underlyingToken, uint256 amount) external view returns (uint256);
 }

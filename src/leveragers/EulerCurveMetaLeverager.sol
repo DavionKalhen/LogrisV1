@@ -68,7 +68,22 @@ contract EulerCurveMetaLeverager is ILeverager, Ownable {
     }
 
     function getRedeemableBalance(address _depositor) external view returns(uint amount) {
-        require(false, "Not yet implemented");
+        EulerCurveMetaLeveragerStorage.Storage storage s = EulerCurveMetaLeveragerStorage.getStorage();
+        IAlchemistV2 alchemist = IAlchemistV2(s.debtSource);
+        (uint256 shares, uint256 lastAccruedWeight) = alchemist.positions(_depositor, s.yieldToken);
+        uint256 depositedYieldTokens = alchemist.convertSharesToYieldTokens(s.yieldToken, shares);
+
+        (int256 debtTokens, address[] memory depositedTokens) = alchemist.accounts(_depositor);
+        uint256 debtYieldTokens;
+        if(debtTokens>0) {
+            uint256 underlyingDebt = alchemist.normalizeDebtTokensToUnderlying(s.underlyingToken, uint(debtTokens));
+            debtYieldTokens = alchemist.convertUnderlyingTokensToYield(s.yieldToken, underlyingDebt);
+        } else {
+            uint256 underlyingCredit = alchemist.normalizeDebtTokensToUnderlying(s.underlyingToken, uint(-1*debtTokens));
+            debtYieldTokens = alchemist.convertUnderlyingTokensToYield(s.yieldToken, underlyingCredit);
+        }
+
+        return depositedYieldTokens - debtYieldTokens;
     }
 
     function predictWithdraw(uint shares) external view returns(uint amount) {
