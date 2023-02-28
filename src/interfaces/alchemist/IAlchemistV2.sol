@@ -6,6 +6,7 @@ import "./IAlchemistV2Errors.sol";
 import "./IAlchemistV2Immutables.sol";
 import "./IAlchemistV2Events.sol";
 import "./IAlchemistV2State.sol";
+import "./IAlchemistV2Convert.sol";
 
 /// @title  IAlchemistV2
 /// @author Alchemix Finance
@@ -15,5 +16,6 @@ interface IAlchemistV2 is
     IAlchemistV2Errors,
     IAlchemistV2Immutables,
     IAlchemistV2Events,
-    IAlchemistV2State
+    IAlchemistV2State,
+    IAlchemistV2Convert
 { }
