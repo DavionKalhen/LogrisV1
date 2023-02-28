@@ -10,7 +10,7 @@ contract AlchemistV2 {
 
     constructor() {
         rETH = new RETH();
-        rETH.mint(msg.sender, 20000 ether);
+        rETH.mint(address(this), 20000 ether);
     }
 
     function deposit(
@@ -20,7 +20,7 @@ contract AlchemistV2 {
     ) external returns (uint256) {
         // Deposit the yield tokens to the recipient.
         // Transfer tokens from the message sender now that the internal storage updates have been committed.
-        IERC20(yieldToken).transferFrom(msg.sender, address(this), amount);
+        IERC20(yieldToken).transferFrom(recipient, address(this), amount);
 
         return amount;
     }
@@ -38,6 +38,7 @@ contract AlchemistV2 {
 
         return amountYieldTokens;
     }
+
     function mint(uint256 amount, address recipient) external {
         if(alETH.totalSupply() == rETH.balanceOf(address(this))/2) {
             revert("alETH is already minted to the max");

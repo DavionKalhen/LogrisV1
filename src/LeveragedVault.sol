@@ -3,81 +3,79 @@ import "lib/openzeppelin-contracts/contracts/token/ERC20/extensions/ERC4626.sol"
 import "lib/openzeppelin-contracts/contracts/token/ERC20/IERC20.sol";
 import "lib/openzeppelin-contracts/contracts/access/Ownable.sol";
 import "./interfaces/ILeveragedVault.sol";
-import "src/Leverager.sol";
+import "./interfaces/ILeverager.sol";
 
 pragma solidity ^0.8.19;
 
 contract LeveragedVault is ERC4626, Ownable, ILeveragedVault {
-    Leverager public leverager;
-    mapping(address => uint256) public deposited;
-    address private _underlyingAsset;
-    address private _yieldToken;
-    uint256 public allowedSlippage = 10; //0.1%;
+    ILeverager private leverager;
+    IERC20 private yieldToken;
+    IERC20 private underlyingToken;
+    uint32 public allowedSlippageBasisPoints;
 
-    constructor(address _token, address _wrapper)
-    ERC4626(IERC20(_token))
-    //these strings should be provided by the factory if you want this contract to be reusable
-    ERC20("Alchemix Leveraged Vault WETH", "lvyvETH") {
-        leverager = new Leverager(_wrapper);
+    constructor(string memory _tokenName, string memory _tokenDescription, address _yieldToken, address _underlyingToken, address _leverager, uint32 _allowedSlippageBasisPoints)
+    ERC4626(IERC20(_yieldToken))
+    ERC20(_tokenDescription, _tokenName) {
+        leverager = ILeverager(_leverager);
+        yieldToken = IERC20(_yieldToken);
+        underlyingToken = IERC20(_underlyingToken);
+        allowedSlippageBasisPoints = _allowedSlippageBasisPoints;
     }
 
     function getYieldToken() external view returns(address){
-        return _yieldToken;
+        return address(yieldToken);
     }
 
-    function getUnderlyingAsset() external view returns(address){
-        return _underlyingAsset;
+    function getUnderlyingToken() external view returns(address){
+        return address(underlyingToken);
     }
 
     function getDepositPoolBalance() external view returns(uint amount) {
-        return IERC20(_yieldToken).balanceOf(address(this));
+        return underlyingToken.balanceOf(address(this));
     }
 
     function getVaultDepositedBalance() external view returns(uint amount){
         return leverager.getDepositedBalance(address(this));
     }
-    function getVaultDebtBalance() external view returns(uint) {
+
+    function getVaultDebtBalance() external view returns(int256) {
         return leverager.getDebtBalance(address(this));
     }
-    function getVaultRedeemableBalance() external view returns(uint) {
-        return leverager.getRedeemableBalance(address(this));
+
+    function getVaultRedeemableBalance() public view returns(uint) {
+        return underlyingToken.balanceOf(address(this)) + leverager.getRedeemableBalance(address(this));
     }
 
-    function convertYieldTokensToShares(uint256 amount) external view returns (uint256 shares) {
-        return amount * totalSupply() / _calculateUnrealizedBalance(_yieldToken);
+    function convertUnderlyingTokensToShares(uint256 amount) public view returns (uint256 shares) {
+        return amount * totalSupply() / getVaultRedeemableBalance();
     }
 
-    function _calculateUnrealizedBalance(address yieldToken) internal view returns (uint256) {
-        return IERC20(yieldToken).balanceOf(address(this)) + leverager.getRedeemableBalance(address(this));
+    function convertSharesToUnderlyingTokens(uint256 shares) public view returns (uint256) {
+        return shares * getVaultRedeemableBalance() / totalSupply();
     }
 
-    function convertSharesToYieldTokens(uint256 shares) external view returns (uint256) {
-        return shares * _calculateUnrealizedBalance(_yieldToken) / totalSupply();
-    }
-
-    function deposit(uint amount, address to) public override(ERC4626, ILeveragedVault) virtual returns(uint) {
-        uint shares = super.deposit(amount, to);
-        deposited[to] += amount;
-        emit Deposit(to, _yieldToken, amount);
+    function depositUnderlying(uint amount, address recipient) public returns(uint) {
+        uint shares = super.deposit(amount, recipient);
+        emit Deposit(recipient, address(underlyingToken), amount);
         return shares;
-        
     }
-    function withdraw(uint shares, address to) external returns(uint amount) {
-        require(shares <= deposited[msg.sender], "You don't have enough deposited");
-        uint share_balance = IERC20(_yieldToken).balanceOf(address(this));
-        if(share_balance < shares) {
-            leverager.withdraw(shares-share_balance);
+
+    function withdrawUnderlying(uint shares, address to) external returns(uint amount) {
+        require(shares <= balanceOf(msg.sender), "You don't have enough deposited");
+        uint underlyingWithdrawAmount = convertSharesToUnderlyingTokens(shares);
+        uint depositPoolBalance = underlyingToken.balanceOf(address(this));
+        if(depositPoolBalance < underlyingWithdrawAmount) {
+            leverager.withdrawUnderlying(underlyingWithdrawAmount-depositPoolBalance);
         }
         amount = super.withdraw(shares, to, address(this));
-        deposited[msg.sender] -= amount;
-        emit Withdraw(msg.sender, _yieldToken, shares);
+        emit Withdraw(msg.sender, address(underlyingToken), shares);
         return amount;
     }
 
     function leverage() external {
-        uint256 minAmountOut = (IERC20(_yieldToken).balanceOf(address(this)) * (10000 - allowedSlippage)) / 10000;
-        uint256 amountOut = IERC20(_yieldToken).balanceOf(address(this));
+        uint256 minAmountOut = (yieldToken.balanceOf(address(this)) * (10000 - allowedSlippageBasisPoints)) / 10000;
+        uint256 amountOut = yieldToken.balanceOf(address(this));
         leverager.leverage(minAmountOut, amountOut);
-        emit Leverage(_yieldToken, amountOut, amountOut);
+        emit Leverage(address(yieldToken), amountOut, amountOut);
     }
 }
