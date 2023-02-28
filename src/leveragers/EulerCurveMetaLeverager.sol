@@ -52,8 +52,12 @@ contract EulerCurveMetaLeverager is ILeverager, Ownable {
         return s.dexPool;
     }
 
-    function getDepositedBalance(address depositor) external view returns(uint amount) {
-        require(false, "Not yet implemented");
+    function getDepositedBalance(address _depositor) external view returns(uint amount) {
+        EulerCurveMetaLeveragerStorage.Storage storage s = EulerCurveMetaLeveragerStorage.getStorage();
+        IAlchemistV2 alchemist = IAlchemistV2(s.debtSource);
+        (uint256 shares, uint256 lastAccruedWeight) = alchemist.positions(_depositor, s.yieldToken);
+        uint256 yieldTokens = alchemist.convertSharesToYieldTokens(s.yieldToken, shares);
+        return yieldTokens;
     }
 
     function getDebtBalance(address depositor) external view returns(uint amount) {
