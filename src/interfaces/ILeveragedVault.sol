@@ -16,6 +16,7 @@ interface ILeveragedVault is IERC4626 {
     function depositUnderlying(uint amount) external returns(uint shares);
     */
     function getYieldToken() external view returns(address yieldToken);
+    function getUnderlyingToken() external view returns(address underlyingToken);
     function getDepositPoolBalance() external view returns(uint amount);
     function getVaultDepositedBalance() external view returns(uint amount);
     function getVaultDebtBalance() external view returns(uint amount);

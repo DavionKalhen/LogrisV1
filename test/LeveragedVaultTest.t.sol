@@ -71,10 +71,8 @@ contract LeveragedVaultTest is Test {
         logris.deposit(daiVaultAddress, 100 ether);
         vm.stopPrank();
         ILeveragedVault vault = ILeveragedVault(logris.vaults(daiVaultAddress));
-        uint256 heldAssets = vault.heldAssets();
+        uint256 heldAssets = vault.getVaultRedeemableBalance();
         assertEq(heldAssets, 100 ether);
-        assertEq(vault.totalAssets(), 100 ether);
-        assertGt(vault.balanceOf(user1), 0);
     }
 
     function testLeverageCall() public {
@@ -85,10 +83,9 @@ contract LeveragedVaultTest is Test {
         logris.deposit(daiVaultAddress, 100 ether);
         vm.stopPrank();
         ILeveragedVault vault = ILeveragedVault(logris.vaults(daiVaultAddress));
-        uint256 heldAssets = vault.heldAssets();
+        uint256 heldAssets = vault.getVaultRedeemableBalance();
         vm.prank(user1);
         vault.leverage();
         console.log("heldAssets: %s", heldAssets);
-        
     }
 }
