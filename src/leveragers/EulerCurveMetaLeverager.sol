@@ -3,12 +3,17 @@ pragma solidity 0.8.19;
 import "../interfaces/ILeverager.sol";
 import "lib/openzeppelin-contracts/contracts/access/Ownable.sol";
 import "lib/openzeppelin-contracts/contracts/token/ERC20/IERC20.sol";
+import "../interfaces/wETH/IWETH.sol";
 import "../interfaces/alchemist/IAlchemistV2.sol";
+import "../interfaces/alchemist/ITokenAdapter.sol";
 import "../interfaces/euler/IFlashLoan.sol";
 import "../interfaces/euler/DToken.sol";
 import "../interfaces/euler/Markets.sol";
 import "../interfaces/uniswap/TransferHelper.sol";
 import "../interfaces/curve/ICurveSwap.sol";
+import "../interfaces/curve/ICurvePool.sol";
+//import conosle log
+import "forge-std/console.sol";
 import {IStableMetaPool} from "../interfaces/curve/IStableMetaPool.sol";
 
 contract EulerCurveMetaLeverager is ILeverager, Ownable {
@@ -18,10 +23,12 @@ contract EulerCurveMetaLeverager is ILeverager, Ownable {
     address public flashLoan;
     address public debtSource;
     address public dexPool;
+    address weth = 0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2;
     int128 debtTokenCurveIndex;
     int128 underlyingTokenCurveIndex;
     uint256 slippage = 100; //1%
     uint256 maxExchangeLoss = 1000; //10%
+    address sender;
 
     constructor(address _yieldToken, address _underlyingToken, address _debtToken, address _flashLoan, address _debtSource, address _dexPool, int128 _debtTokenCurveIndex, int128 _underlyingTokenCurveIndex) {
         yieldToken = _yieldToken;
@@ -35,21 +42,19 @@ contract EulerCurveMetaLeverager is ILeverager, Ownable {
 
     }
 
-    function getDepositedBalance(address _depositor) external view returns(uint amount) {
+    function getDepositedBalance(address _depositor) public view returns(uint amount) {
         IAlchemistV2 alchemist = IAlchemistV2(debtSource);
         //last accrued weight appears to be unrealized credit denominated in debt tokens
         (uint256 shares,) = alchemist.positions(_depositor, yieldToken);
-        uint256 yieldTokens = alchemist.convertSharesToUnderlyingTokens(yieldToken, shares);
-        return yieldTokens;
+        amount = alchemist.convertSharesToUnderlyingTokens(yieldToken, shares);
     }
 
-    function getDebtBalance(address _depositor) external view returns(int256 amount) {
+    function getDebtBalance(address _depositor) public view returns(int256 amount) {
         IAlchemistV2 alchemist = IAlchemistV2(debtSource);
-        (int256 debt,) = alchemist.accounts(_depositor);
-        return debt;
+        (amount,) = alchemist.accounts(_depositor);
     }
 
-    function getRedeemableBalance(address _depositor) external view returns(uint amount) {
+    function getRedeemableBalance(address _depositor) public view returns(uint amount) {
         IAlchemistV2 alchemist = IAlchemistV2(debtSource);
         (uint256 shares,) = alchemist.positions(_depositor, yieldToken);
         uint256 depositedUnderlyingTokens = alchemist.convertSharesToUnderlyingTokens(yieldToken, shares);
@@ -79,9 +84,14 @@ contract EulerCurveMetaLeverager is ILeverager, Ownable {
         require(depositCapacity > 0, "Vault is full");
         require(depositAmount > 0, "Deposit amount must be greater than 0");
 
-        TransferHelper.safeTransferFrom(yieldToken, msg.sender, address(this), depositAmount);
-         
-        if(depositAmount > depositCapacity) {
+        TransferHelper.safeTransferFrom(underlyingToken, msg.sender, address(this), depositAmount);
+        IAlchemistV2 alchemist = IAlchemistV2(debtSource);
+
+        IAlchemistV2.UnderlyingTokenParams memory underlyingParams = alchemist.getUnderlyingTokenParameters(underlyingToken);
+        IAlchemistV2.YieldTokenParams memory yieldParams = alchemist.getYieldTokenParameters(yieldToken);
+        ITokenAdapter adapter = ITokenAdapter(yieldParams.adapter);
+        uint256 priceAdjustedDepositAmount = depositAmount * adapter.price() / 10**underlyingParams.decimals;
+        if(priceAdjustedDepositAmount > depositCapacity) {
             // Vault can't hold all the deposit pool. Fill up the pool.
             depositAmount = depositCapacity;
         }
@@ -91,39 +101,48 @@ contract EulerCurveMetaLeverager is ILeverager, Ownable {
             address dTokenAddress = markets.underlyingToDToken(underlyingToken);
             DToken dToken = DToken(dTokenAddress);
             uint flashLoanAmount = (depositAmount - (depositAmount/slippage)) + depositAmount < depositCapacity 
-                ? (depositAmount - (depositAmount/100))
+                ? (depositAmount - (depositAmount/10))
                 : depositCapacity - depositAmount;
+
+            sender = msg.sender;
             dToken.flashLoan(flashLoanAmount, abi.encodePacked(flashLoanAmount, depositAmount, minDepositAmount));
             return;
         }
-        depositUnderlying(depositAmount, minDepositAmount);
-        mintDebtTokens(depositAmount);
+        depositUnderlying(depositAmount, minDepositAmount, msg.sender);
+        mintDebtTokens(depositAmount, msg.sender);
         swapDebtTokens(depositAmount);
         return;
     }
 
     function onFlashLoan(bytes memory data) external {
         (uint flashLoanAmount, uint depositAmount, uint minDepositAmount) = abi.decode(data, (uint, uint, uint));
-        depositUnderlying(flashLoanAmount + depositAmount, minDepositAmount + (flashLoanAmount - (flashLoanAmount/slippage)));
-        mintDebtTokens(flashLoanAmount + depositAmount);
-        swapDebtTokens(flashLoanAmount + depositAmount);
+        console.log("Depositing");
+        depositUnderlying(flashLoanAmount + depositAmount, minDepositAmount + (flashLoanAmount - (flashLoanAmount/slippage)), sender);
+        uint redeemable = getDepositedBalance(sender);// - getDebtBalance(address(this));
+        console.log("Redeemable:   ", redeemable/2);
+        console.log("Flash amount: ", flashLoanAmount);
+        mintDebtTokens(redeemable, sender);
+        console.log("Minted:       ", IERC20(debtToken).balanceOf(address(this)));
+        swapDebtTokens(redeemable/2);
+        console.log("Swapped");
         repayFlashLoan(flashLoanAmount);
-        return;
+        sender = address(0);
     }
 
-    function depositUnderlying(uint amount, uint minAmountOut) internal {
+    function depositUnderlying(uint amount, uint minAmountOut, address sender_) internal {
         IAlchemistV2 alchemist = IAlchemistV2(debtSource);
-        IERC20(yieldToken).approve(address(alchemist), amount);
-        alchemist.depositUnderlying(yieldToken, amount, address(this), minAmountOut);
+        IERC20(underlyingToken).approve(address(alchemist), amount);
+        alchemist.depositUnderlying(yieldToken, amount, sender_, minAmountOut);
     }
 
     function swapDebtTokens(uint amount) internal {
         ICurveSwap curveSwap = ICurveSwap(dexPool);
-        (, uint256 amountOut) = curveSwap.getBestRate(debtToken, underlyingToken, amount);
+        address swapTo = underlyingToken == weth ? 0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE : underlyingToken;
+        (address pool, uint256 amountOut) = curveSwap.get_best_rate(debtToken, swapTo, amount);
         require(acceptableLoss(amount, amountOut), "Swap exceeds max acceptable loss");
-        uint256 amountRecieved = curveSwap.exchange_with_best_rate(debtToken, underlyingToken, amount, amountOut, address(this));
-        require(amountRecieved >= amountOut, "Swap failed");
-        return;
+        IERC20(debtToken).approve(pool, amount);
+        uint256 amountRecieved = ICurvePool(pool).exchange(1, 0, amount, 1);
+        require(amountRecieved >= 1, "Swap failed");
     }
 
     function acceptableLoss(uint256 amountIn, uint256 amountOut) internal view returns(bool) {
@@ -149,15 +168,21 @@ contract EulerCurveMetaLeverager is ILeverager, Ownable {
             return 0;
     }
 
-    function mintDebtTokens(uint amount) internal {
+    function mintDebtTokens(uint amount, address sender_) internal {
         IAlchemistV2 alchemist = IAlchemistV2(debtSource);
         (uint maxMintable, ,) = alchemist.getMintLimitInfo();
         if (amount > maxMintable) {
             //mint as much as possible.
             amount = maxMintable;
         }
-        alchemist.mint(amount, address(this));
+        
+        alchemist.mintFrom(sender_, amount/2, address(this));
         //Mint Debt Tokens
         return;
+    }
+    fallback() external payable {
+        IWETH(weth).deposit{value: msg.value}();
+        console.log("WETH deposited");
+        console.log(msg.value);
     }
 }

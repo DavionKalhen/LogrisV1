@@ -16,7 +16,7 @@ contract EulerCurveMetaLeveragerTest is Test {
     address wETHAddress = 0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2;
     address alETHAddress = 0x0100546F2cD4C9D97f798fFC9755E47865FF7Ee6;
     address eulerMarketsAddress = 0x3520d5a913427E6F0D6A83E07ccD4A4da316e4d3;
-    address alETHCurvePoolAddress = 0xC4C319E2D4d66CcA4464C0c2B32c9Bd23ebe784e;
+    address alETHCurvePoolAddress = 0x99a58482BD75cbab83b27EC03CA68fF489b5788f;
     address alchemistV2Address = 0x062Bf725dC4cDF947aa79Ca2aaCCD4F385b13b5c;
     //this is the alUSD alchemist
     //address alchemistV2Address = 0x5C6374a2ac4EBC38DeA0Fc1F8716e5Ea1AdD94dd;
@@ -29,6 +29,7 @@ contract EulerCurveMetaLeveragerTest is Test {
     IWETH wETH;
     uint wETHDecimalOffset;
     uint256 constant minimumCollateralization = 2000000000000000000;
+    address user;
 
     function setUp() public {
         vm.deal(address(this), 200 ether);
@@ -36,10 +37,13 @@ contract EulerCurveMetaLeveragerTest is Test {
         //setup whitelist
         alchemist = IAlchemistV2(alchemistV2Address);
         whitelist = Whitelist(alchemist.whitelist());
-        vm.prank(whitelist.owner());
-        whitelist.add(address(this));
-        vm.prank(whitelist.owner());
+        user = vm.addr(1);
+        vm.deal(user, 200 ether);
+        vm.startPrank(whitelist.owner());
         whitelist.add(address(leverager));
+        whitelist.add(user);
+        whitelist.add(address(this));
+        vm.stopPrank();
         require(whitelist.isWhitelisted(address(leverager)), "failed to whitelist");
 
         //add pool capacity
@@ -94,4 +98,36 @@ contract EulerCurveMetaLeveragerTest is Test {
         uint256 result = leverager.getRedeemableBalance(address(this));
         require(result+10**17 > 9*wETHDecimalOffset, "Redeemable Balance lookup failed");
     }
+
+    function testVaultCapacityFullLeverage() public {
+        vm.prank(alchemist.admin());
+        alchemist.setMaximumExpectedValue(wstETHAddress, 0);
+        vm.expectRevert("Vault is full");
+        leverager.leverage(1 ether, 0.9 ether);
+    }
+
+    function testDepositPoolGreaterThanVaultCapacityLeverage() public {
+
+    }
+
+    function testVaultCapacityBetweenDepositPoolAndMaxLeverage() public {
+        
+    }
+
+    function testUnhinderedLeverage() public {
+        vm.startPrank(user);
+        console.log("User ", user);
+        wETH.deposit{value:10 ether}();
+        uint wETHinitialDeposit = wETH.balanceOf(user);
+        wETH.approve(address(leverager), wETHinitialDeposit);
+        alchemist.approveMint(address(leverager), wETHinitialDeposit*10000000);
+        alchemist.approveMint(address(this), wETHinitialDeposit*10000000);
+        leverager.leverage(wETHinitialDeposit, wETHinitialDeposit-(wETHinitialDeposit/5));
+        uint depositBalance = leverager.getDepositedBalance(user);
+
+        require(depositBalance>wETHinitialDeposit, "Leverage below expected value");
+        int256 debtBalance = leverager.getDebtBalance(user);
+        vm.stopPrank();
+    }
+    //probably also want to test situations where there is existing balance and debt on the caller
 }
