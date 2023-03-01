@@ -29,7 +29,6 @@ contract EulerCurveMetaLeverager is ILeverager, Ownable {
         underlyingTokenCurveIndex = _underlyingTokenCurveIndex;
     }
 
-    //this needs to be rewritten for underlying
     function getDepositedBalance(address _depositor) external view returns(uint amount) {
         IAlchemistV2 alchemist = IAlchemistV2(debtSource);
         //last accrued weight appears to be unrealized credit denominated in debt tokens
@@ -44,23 +43,20 @@ contract EulerCurveMetaLeverager is ILeverager, Ownable {
         return debt;
     }
 
-    //this needs to be rewritten for underlying
     function getRedeemableBalance(address _depositor) external view returns(uint amount) {
         IAlchemistV2 alchemist = IAlchemistV2(debtSource);
         (uint256 shares,) = alchemist.positions(_depositor, yieldToken);
-        uint256 depositedYieldTokens = alchemist.convertSharesToYieldTokens(yieldToken, shares);
+        uint256 depositedUnderlyingTokens = alchemist.convertSharesToUnderlyingTokens(yieldToken, shares);
 
         (int256 debtTokens,) = alchemist.accounts(_depositor);
         uint256 debtYieldTokens;
         if(debtTokens>0) {
             uint256 underlyingDebt = alchemist.normalizeDebtTokensToUnderlying(underlyingToken, uint(debtTokens));
-            debtYieldTokens = alchemist.convertUnderlyingTokensToYield(yieldToken, underlyingDebt);
+            return depositedUnderlyingTokens - underlyingDebt;
         } else {
             uint256 underlyingCredit = alchemist.normalizeDebtTokensToUnderlying(underlyingToken, uint(-1*debtTokens));
-            debtYieldTokens = alchemist.convertUnderlyingTokensToYield(yieldToken, underlyingCredit);
+            return depositedUnderlyingTokens + underlyingCredit;
         }
-
-        return depositedYieldTokens - debtYieldTokens;
     }
 
     function withdrawUnderlying(uint amount) external {

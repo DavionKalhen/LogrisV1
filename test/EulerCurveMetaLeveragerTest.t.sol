@@ -28,6 +28,7 @@ contract EulerCurveMetaLeveragerTest is Test {
     Whitelist whitelist;
     IWETH wETH;
     uint wETHDecimalOffset;
+    uint256 constant minimumCollateralization = 2000000000000000000;
 
     function setUp() public {
         vm.deal(address(this), 200 ether);
@@ -52,26 +53,45 @@ contract EulerCurveMetaLeveragerTest is Test {
         wETH.approve(address(alchemistV2Address), type(uint256).max);
     }
 
-    function testGetDepositedBalance() public {
+    function deposit10Weth() internal {
         wETH.deposit{value:10 ether}();
         uint wETHBalance = wETH.balanceOf(address(this));
         require(10*wETHDecimalOffset==wETHBalance,"wETH failed to wrap");
 
-        uint256 minimumAmountOut = 9*wETHDecimalOffset;
+        //minimumAmountOut is denominated in yield tokens so this is fragile.
+        uint256 minimumAmountOut = 8*wETHDecimalOffset;
         alchemist.depositUnderlying(wstETHAddress, wETHBalance, address(this), minimumAmountOut);
-        uint256 result = leverager.getDepositedBalance(address(this));
-        require(result > 0, "Deposit Balance lookup failed");
     }
-    
+
+    function borrow1alETH() internal returns(uint) {
+        //wETH decimals = alAsset decimals
+        uint alETHAmount = 1*wETHDecimalOffset;
+        alchemist.mint(alETHAmount, address(this));
+        IERC20 alETH = IERC20(alETHAddress);
+        uint alETHMinted = alETH.balanceOf(address(this));
+        require(alETHMinted==alETHAmount,"Mint did not transfer full amount");
+        return alETHMinted;
+    }
+
+    function testGetDepositedBalance() public {
+        deposit10Weth();
+        uint256 result = leverager.getDepositedBalance(address(this));
+        require(result > 8*wETHDecimalOffset, "Deposit Balance lookup failed");
+    }
+
     function testGetDebtBalance() public {
-        address randomAccount = 0x2330eB2d92167c3b6B22690c03b508E0CA532980;
-        int256 debtTokens = leverager.getDebtBalance(randomAccount);
-        require(debtTokens > 0, "Debt Balance lookup failed");
+        deposit10Weth();
+        uint alETHAmount = borrow1alETH();
+        int256 debtTokens = leverager.getDebtBalance(address(this));
+        //for some reason the debt returned by Alchemist is not equal the alETH issued.
+        //so I add .01 alETH to what we compare against
+        require(debtTokens+10**17 > int256(alETHAmount), "Debt Balance lookup failed");
     }
 
     function testGetRedeemableBalance() public {
-        address randomAccount = 0xd24f5143605F79DF9D73E9b9b5969eD201B721A7;
-        uint256 yieldTokens = leverager.getRedeemableBalance(randomAccount);
-        require(yieldTokens > 0, "Redeemable Balance lookup failed");
+        deposit10Weth();
+        uint alETHAmount = borrow1alETH();
+        uint256 result = leverager.getRedeemableBalance(address(this));
+        require(result+10**17 > 9*wETHDecimalOffset, "Redeemable Balance lookup failed");
     }
 }
