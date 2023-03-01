@@ -4,6 +4,7 @@ import "../interfaces/ILeverager.sol";
 import "lib/openzeppelin-contracts/contracts/access/Ownable.sol";
 import "lib/openzeppelin-contracts/contracts/token/ERC20/IERC20.sol";
 import "../interfaces/alchemist/IAlchemistV2.sol";
+import "../interfaces/alchemist/ITokenAdapter.sol";
 import "../interfaces/euler/IFlashLoan.sol";
 import "../interfaces/euler/DToken.sol";
 import "../interfaces/euler/Markets.sol";
@@ -80,8 +81,13 @@ contract EulerCurveMetaLeverager is ILeverager, Ownable {
         require(depositAmount > 0, "Deposit amount must be greater than 0");
 
         TransferHelper.safeTransferFrom(underlyingToken, msg.sender, address(this), depositAmount);
-         
-        if(depositAmount > depositCapacity) {
+        IAlchemistV2 alchemist = IAlchemistV2(debtSource);
+
+        IAlchemistV2.UnderlyingTokenParams memory underlyingParams = alchemist.getUnderlyingTokenParameters(underlyingToken);
+        IAlchemistV2.YieldTokenParams memory yieldParams = alchemist.getYieldTokenParameters(yieldToken);
+        ITokenAdapter adapter = ITokenAdapter(yieldParams.adapter);
+        uint256 priceAdjustedDepositAmount = depositAmount * adapter.price() / 10**underlyingParams.decimals;
+        if(priceAdjustedDepositAmount > depositCapacity) {
             // Vault can't hold all the deposit pool. Fill up the pool.
             depositAmount = depositCapacity;
         }
