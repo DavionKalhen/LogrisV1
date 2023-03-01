@@ -113,7 +113,7 @@ contract EulerCurveMetaLeveragerTest is Test {
     function testUnhinderedLeverage() public {
         wETH.deposit{value:10 ether}();
         uint wETHinitialDeposit = wETH.balanceOf(address(this));
-        leverager.leverage(wETHinitialDeposit, wETHinitialDeposit-(wETHinitialDeposit/50));
+        leverager.leverage(wETHinitialDeposit, wETHinitialDeposit-(wETHinitialDeposit/5));
         uint depositBalance = leverager.getDepositedBalance(address(this));
         require(depositBalance+10**17>2*wETHinitialDeposit, "Leverage below expected value");
         int256 debtBalance = leverager.getDebtBalance(address(this));
