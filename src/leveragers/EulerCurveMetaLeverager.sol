@@ -100,7 +100,7 @@ contract EulerCurveMetaLeverager is ILeverager, Ownable {
             address dTokenAddress = markets.underlyingToDToken(underlyingToken);
             DToken dToken = DToken(dTokenAddress);
             uint flashLoanAmount = (depositAmount - (depositAmount/slippage)) + depositAmount < depositCapacity 
-                ? (depositAmount - (depositAmount/100))
+                ? (depositAmount - (depositAmount/10))
                 : depositCapacity - depositAmount;
             dToken.flashLoan(flashLoanAmount, abi.encodePacked(flashLoanAmount, depositAmount, minDepositAmount));
             return;
@@ -114,7 +114,7 @@ contract EulerCurveMetaLeverager is ILeverager, Ownable {
     function onFlashLoan(bytes memory data) external {
         (uint flashLoanAmount, uint depositAmount, uint minDepositAmount) = abi.decode(data, (uint, uint, uint));
         depositUnderlying(flashLoanAmount + depositAmount, minDepositAmount + (flashLoanAmount - (flashLoanAmount/slippage)));
-        uint redeemable = getDepositedBalance(address(this));// - getDebtBalance(address(this));
+        uint redeemable = getDepositedBalance(msg.sender);// - getDebtBalance(address(this));
         console.log("redeemable:   ", redeemable/2);
         console.log("Flash amount: ", flashLoanAmount);
         mintDebtTokens(redeemable);
@@ -127,7 +127,7 @@ contract EulerCurveMetaLeverager is ILeverager, Ownable {
     function depositUnderlying(uint amount, uint minAmountOut) internal {
         IAlchemistV2 alchemist = IAlchemistV2(debtSource);
         IERC20(underlyingToken).approve(address(alchemist), amount);
-        alchemist.depositUnderlying(yieldToken, amount, address(this), minAmountOut);
+        alchemist.depositUnderlying(yieldToken, amount, msg.sender, minAmountOut);
     }
 
     function swapDebtTokens(uint amount) internal {
@@ -171,7 +171,7 @@ contract EulerCurveMetaLeverager is ILeverager, Ownable {
             amount = maxMintable;
         }
         
-        alchemist.mint(amount/2, address(this));
+        alchemist.mintFrom(msg.sender, amount/2, address(this));
         //Mint Debt Tokens
         return;
     }
