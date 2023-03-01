@@ -21,6 +21,7 @@ contract EulerCurveMetaLeverager is ILeverager, Ownable {
     address public flashLoan;
     address public debtSource;
     address public dexPool;
+    address weth = 0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2;
     int128 debtTokenCurveIndex;
     int128 underlyingTokenCurveIndex;
     uint256 slippage = 100; //1%
@@ -129,10 +130,11 @@ contract EulerCurveMetaLeverager is ILeverager, Ownable {
 
     function swapDebtTokens(uint amount) internal {
         ICurveSwap curveSwap = ICurveSwap(dexPool);
-        (, uint256 amountOut) = curveSwap.getBestRate(debtToken, underlyingToken, amount);
+        address swapTo = underlyingToken == weth ? 0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE : underlyingToken;
+        (, uint256 amountOut) = curveSwap.get_best_rate(debtToken, swapTo, amount);
         require(acceptableLoss(amount, amountOut), "Swap exceeds max acceptable loss");
-        uint256 amountRecieved = curveSwap.exchange_with_best_rate(debtToken, underlyingToken, amount, amountOut, address(this));
-        require(amountRecieved >= amountOut, "Swap failed");
+        uint256 amountRecieved = curveSwap.exchange_with_best_rate(debtToken, underlyingToken, amount, 1, address(this));
+        require(amountRecieved >= 1, "Swap failed");
     }
 
     function acceptableLoss(uint256 amountIn, uint256 amountOut) internal view returns(bool) {
