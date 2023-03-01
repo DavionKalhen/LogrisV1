@@ -2,55 +2,37 @@
 
 pragma solidity ^0.8.19;
 import "lib/openzeppelin-contracts/contracts/access/Ownable.sol";
+import "lib/openzeppelin-contracts/contracts/token/ERC20/IERC20.sol";
 import "./interfaces/alchemist/IAlchemistV2.sol";
 import "./interfaces/alchemist/Sets.sol";
 import "./interfaces/alchemist/ITokenAdapter.sol";
+import "./interfaces/uniswap/TransferHelper.sol";
+import "./interfaces/curve/ICurveSwap.sol";
+import "./interfaces/euler/DToken.sol";
+import "./interfaces/euler/Markets.sol";
 import "forge-std/console.sol";
 
 
 contract Leverager is Ownable {
-    uint256 public heldAssets;
-    uint256 public borrowedAssets;
     IAlchemistV2 public alchemist;
+    ICurveSwap curveSwap = ICurveSwap(0x99a58482BD75cbab83b27EC03CA68fF489b5788f);
+    DToken dToken;
+    Markets markets;
+
     address yieldToken;
+    address debtToken;
+    address underlyingToken;
+    address wethAddress = 0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2;
+    address eulerMarketsAddress = 0x3520d5a913427E6F0D6A83E07ccD4A4da316e4d3;
 
-    struct Account {
-        // A signed value which represents the current amount of debt or credit that the account has accrued.
-        // Positive values indicate debt, negative values indicate credit.
-        int256 debt;
-        // The share balances for each yield token.
-        mapping(address => uint256) balances;
-        // The last values recorded for accrued weights for each yield token.
-        mapping(address => uint256) lastAccruedWeights;
-        // The set of yield tokens that the account has deposited into the system.
-        Sets.AddressSet depositedTokens;
-        // The allowances for mints.
-        mapping(address => uint256) mintAllowances;
-        // The allowances for withdrawals.
-        mapping(address => mapping(address => uint256)) withdrawAllowances;
-    }
-
+    uint256 slippage = 100; //1%
+    uint256 maxExchangeLoss = 1000; //10%
     constructor(address yieldToken_) {
         alchemist = IAlchemistV2(0x5C6374a2ac4EBC38DeA0Fc1F8716e5Ea1AdD94dd);
         yieldToken = yieldToken_;
     }
 
-    function addAssets(uint _assets) external onlyOwner {
-        heldAssets += _assets;
-    }
-
-    function validateDebtRatio() public view returns (bool) {
-        (int256 unrealizedDebt, address [] memory values) = alchemist.accounts(address(this));
-        uint256 _totalValue = totalValue(values);
-        if(_totalValue == 0) {
-            return false;
-        }
-        uint256 debtRatio = uint256(unrealizedDebt) / _totalValue;
-        uint256 minimumCollateralization = alchemist.minimumCollateralization();
-        return debtRatio < minimumCollateralization;
-    }
-
-    /*
+     /*
         We need to detect the state we are under relative to the available deposit ceiling.
         In order:
         1) The Alchemix vault is full.
@@ -62,75 +44,85 @@ contract Leverager is Ownable {
             c) mint/trade repay flash loan
         4) The vault has capacity for maximum leverage. Flow as normal.
     */
-    function leverage() external onlyOwner {
-        require(heldAssets > 0, "No assets to leverage");
-        IAlchemistV2.YieldTokenParams memory yieldTokenParams = alchemist.getYieldTokenParameters(yieldToken);
-        //deposit as much as we can.
-        alchemist.depositUnderlying(yieldToken, heldAssets, address(this), heldAssets);
-        //Check our debt ratio
-         if(validateDebtRatio()) {
-             //If we are undercollateralized, mint more yield tokens
-             alchemist.mint(heldAssets, address(this));
-             console.log("Minting more yield tokens");
-         }
-         else console.log("Nothing to mint");
+
+
+    function leverage(uint minDepositAmount, uint depositAmount) external {
+        uint depositCapacity = getDepositCapacity();
+        require(depositCapacity > 0, "Vault is full");
+        require(depositAmount > 0, "Deposit amount must be greater than 0");
+
+        TransferHelper.safeTransferFrom(yieldToken, msg.sender, address(this), depositAmount);
+         
+        if(depositAmount > depositCapacity) {
+            // Vault can't hold all the deposit pool. Fill up the pool.
+            depositAmount = depositCapacity;
+        }
+        else {
+            //Calculate flashloan amount. Amount flashed is less a % from total to account for slippage.
+            uint flashLoanAmount = (depositAmount - (depositAmount/slippage)) + depositAmount < depositCapacity 
+                ? (depositAmount - (depositAmount/100))
+                : depositCapacity - depositAmount;
+            dToken.flashLoan(flashLoanAmount, abi.encodePacked(flashLoanAmount, depositAmount, minDepositAmount));
+            return;
+        }
+        depositUnderlying(depositAmount, minDepositAmount);
+        mintDebtTokens(depositAmount);
+        swapDebtTokens(depositAmount);
+        return;
     }
 
-    function totalValue(address [] memory values) internal view returns (uint256 totalValue_) {
-
-        for (uint256 i = 0; i < values.length; i++) {
-            address yieldToken_             = values[i];
-            IAlchemistV2.YieldTokenParams memory yieldTokenParams = alchemist.getYieldTokenParameters(yieldToken_);
-            address underlyingToken_        = yieldTokenParams.underlyingToken;
-            (uint256 shares, )             = alchemist.positions(address(this), yieldToken_);
-            uint256 amountUnderlyingTokens = _convertSharesToUnderlyingTokens(yieldTokenParams, shares);
-
-            totalValue_ += _normalizeUnderlyingTokensToDebt(underlyingToken_, amountUnderlyingTokens);
-        }
-    }
-    function _convertSharesToUnderlyingTokens(IAlchemistV2.YieldTokenParams memory yieldTokenParams, uint256 shares) internal view returns (uint256) {
-        uint256 amountYieldTokens = _convertSharesToYieldTokens(yieldTokenParams, shares);
-        return _convertYieldTokensToUnderlying(yieldTokenParams, amountYieldTokens);
+    function onFlashLoan(bytes memory data) external {
+        (uint flashLoanAmount, uint depositAmount, uint minDepositAmount) = abi.decode(data, (uint, uint, uint));
+        depositUnderlying(flashLoanAmount + depositAmount, minDepositAmount + (flashLoanAmount - (flashLoanAmount/slippage)));
+        mintDebtTokens(flashLoanAmount + depositAmount);
+        swapDebtTokens(flashLoanAmount + depositAmount);
+        repayFlashLoan(flashLoanAmount);
+        return;
     }
 
-    function _convertYieldTokensToUnderlying( IAlchemistV2.YieldTokenParams memory yieldTokenParams , uint256 amount) internal view returns (uint256) {
-        ITokenAdapter adapter = ITokenAdapter(yieldTokenParams.adapter);
-        return amount * adapter.price() / 10**yieldTokenParams.decimals;
+    function depositUnderlying(uint amount, uint minAmountOut) internal {
+        IERC20(yieldToken).approve(address(alchemist), amount);
+        alchemist.depositUnderlying(yieldToken, amount, address(this), minAmountOut);
     }
 
-    function _convertSharesToYieldTokens(IAlchemistV2.YieldTokenParams memory  yieldTokenParams, uint256 shares) internal view returns (uint256) {
-        uint256 totalShares = yieldTokenParams.totalShares;
-        if (totalShares == 0) {
-          return shares;
-        }
-        return (shares * _calculateUnrealizedActiveBalance(yieldTokenParams)) / totalShares;
-    }  
-
-    function _calculateUnrealizedActiveBalance(IAlchemistV2.YieldTokenParams memory yieldTokenParams) internal view returns (uint256) {
-        uint256 activeBalance = yieldTokenParams.activeBalance;
-        if (activeBalance == 0) {
-          return activeBalance;
-        }
-
-        uint256 currentValue = _convertYieldTokensToUnderlying(yieldTokenParams, activeBalance);
-        uint256 expectedValue = yieldTokenParams.expectedValue;
-        if (currentValue <= expectedValue) {
-          return activeBalance;
-        }
-
-        uint256 harvestable = _convertUnderlyingTokensToYield(yieldTokenParams, currentValue - expectedValue);
-        if (harvestable == 0) {
-          return activeBalance;
-        }
-
-        return activeBalance - harvestable;
-    }       
-    function _normalizeUnderlyingTokensToDebt(address underlyingToken_, uint256 amount) internal view returns (uint256) {
-        IAlchemistV2.UnderlyingTokenParams memory underlyingTokenParams = alchemist.getUnderlyingTokenParameters(underlyingToken_);
-        return amount * underlyingTokenParams.conversionFactor;
+    function swapDebtTokens(uint amount) internal {
+        (address pool, uint256 amountOut) = curveSwap.getBestRate(debtToken, underlyingToken, amount);
+        require(acceptableLoss(amount, amountOut), "Swap exceeds max acceptable loss");
+        uint256 amountRecieved = curveSwap.exchange_with_best_rate(debtToken, underlyingToken, amount, amountOut, address(this));
+        require(amountRecieved >= amountOut, "Swap failed");
+        return;
     }
-    function _convertUnderlyingTokensToYield(IAlchemistV2.YieldTokenParams memory yieldTokenParams, uint256 amount) internal view returns (uint256) {
-        ITokenAdapter adapter = ITokenAdapter(yieldTokenParams.adapter);
-        return amount * 10**yieldTokenParams.decimals / adapter.price();
-    }         
+
+    function acceptableLoss(uint256 amountIn, uint256 amountOut) internal view returns(bool) {
+        if(amountOut > amountIn) return true;
+        return amountIn - amountOut < amountIn * maxExchangeLoss / 10000;
+    }
+
+    function repayFlashLoan(uint amount) internal {
+        TransferHelper.safeTransfer(underlyingToken, msg.sender, amount);
+        return;
+    }
+
+    function withdraw(uint shares) external returns(uint amount) {
+        return amount;
+    }
+
+    function getDepositCapacity() public view returns(uint) {
+        IAlchemistV2.YieldTokenParams memory params = alchemist.getYieldTokenParameters(yieldToken);
+        if(params.maximumExpectedValue >= params.expectedValue)
+            return params.maximumExpectedValue - params.expectedValue;
+        else
+            return 0;
+    }
+
+    function mintDebtTokens(uint amount) internal {
+        (uint maxMintable, ,) = alchemist.getMintLimitInfo();
+        if (amount > maxMintable) {
+            //mint as much as possible.
+            amount = maxMintable;
+        }
+        alchemist.mint(amount, address(this));
+        //Mint Debt Tokens
+        return;
+    }
 }
