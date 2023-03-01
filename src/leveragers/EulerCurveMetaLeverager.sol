@@ -10,6 +10,8 @@ import "../interfaces/euler/DToken.sol";
 import "../interfaces/euler/Markets.sol";
 import "../interfaces/uniswap/TransferHelper.sol";
 import "../interfaces/curve/ICurveSwap.sol";
+//import conosle log
+import "forge-std/console.sol";
 import {IStableMetaPool} from "../interfaces/curve/IStableMetaPool.sol";
 
 contract EulerCurveMetaLeverager is ILeverager, Ownable {
@@ -36,21 +38,19 @@ contract EulerCurveMetaLeverager is ILeverager, Ownable {
 
     }
 
-    function getDepositedBalance(address _depositor) external view returns(uint amount) {
+    function getDepositedBalance(address _depositor) public view returns(uint amount) {
         IAlchemistV2 alchemist = IAlchemistV2(debtSource);
         //last accrued weight appears to be unrealized credit denominated in debt tokens
         (uint256 shares,) = alchemist.positions(_depositor, yieldToken);
-        uint256 yieldTokens = alchemist.convertSharesToUnderlyingTokens(yieldToken, shares);
-        return yieldTokens;
+        amount = alchemist.convertSharesToUnderlyingTokens(yieldToken, shares);
     }
 
-    function getDebtBalance(address _depositor) external view returns(int256 amount) {
+    function getDebtBalance(address _depositor) public view returns(int256 amount) {
         IAlchemistV2 alchemist = IAlchemistV2(debtSource);
-        (int256 debt,) = alchemist.accounts(_depositor);
-        return debt;
+        (amount,) = alchemist.accounts(_depositor);
     }
 
-    function getRedeemableBalance(address _depositor) external view returns(uint amount) {
+    function getRedeemableBalance(address _depositor) public view returns(uint amount) {
         IAlchemistV2 alchemist = IAlchemistV2(debtSource);
         (uint256 shares,) = alchemist.positions(_depositor, yieldToken);
         uint256 depositedUnderlyingTokens = alchemist.convertSharesToUnderlyingTokens(yieldToken, shares);
@@ -111,10 +111,14 @@ contract EulerCurveMetaLeverager is ILeverager, Ownable {
     function onFlashLoan(bytes memory data) external {
         (uint flashLoanAmount, uint depositAmount, uint minDepositAmount) = abi.decode(data, (uint, uint, uint));
         depositUnderlying(flashLoanAmount + depositAmount, minDepositAmount + (flashLoanAmount - (flashLoanAmount/slippage)));
-        mintDebtTokens(flashLoanAmount + depositAmount);
-        swapDebtTokens(flashLoanAmount + depositAmount);
+        uint redeemable = getDepositedBalance(address(this));// - getDebtBalance(address(this));
+        console.log("redeemable:   ", redeemable/2);
+        console.log("Flash amount: ", flashLoanAmount);
+        mintDebtTokens(redeemable);
+        console.log("Minted:       ", IERC20(debtToken).balanceOf(address(this)));
+        swapDebtTokens(redeemable/2);
+        console.log("Swapped");
         repayFlashLoan(flashLoanAmount);
-        return;
     }
 
     function depositUnderlying(uint amount, uint minAmountOut) internal {
@@ -129,7 +133,6 @@ contract EulerCurveMetaLeverager is ILeverager, Ownable {
         require(acceptableLoss(amount, amountOut), "Swap exceeds max acceptable loss");
         uint256 amountRecieved = curveSwap.exchange_with_best_rate(debtToken, underlyingToken, amount, amountOut, address(this));
         require(amountRecieved >= amountOut, "Swap failed");
-        return;
     }
 
     function acceptableLoss(uint256 amountIn, uint256 amountOut) internal view returns(bool) {
@@ -162,7 +165,8 @@ contract EulerCurveMetaLeverager is ILeverager, Ownable {
             //mint as much as possible.
             amount = maxMintable;
         }
-        alchemist.mint(amount, address(this));
+        
+        alchemist.mint(amount/2, address(this));
         //Mint Debt Tokens
         return;
     }
