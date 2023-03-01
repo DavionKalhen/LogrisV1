@@ -94,4 +94,27 @@ contract EulerCurveMetaLeveragerTest is Test {
         uint256 result = leverager.getRedeemableBalance(address(this));
         require(result+10**17 > 9*wETHDecimalOffset, "Redeemable Balance lookup failed");
     }
+
+    function testVaultCapacityFullLeverage() public {
+
+    }
+
+    function testDepositPoolGreaterThanVaultCapacityLeverage() public {
+
+    }
+
+    function testVaultCapacityBetweenDepositPoolAndMaxLeverage() public {
+        
+    }
+
+    function testUnhinderedLeverage() public {
+        wETH.deposit{value:10 ether}();
+        uint wETHinitialDeposit = wETH.balanceOf(address(this));
+        leverager.leverage(wETHinitialDeposit);
+        uint depositBalance = leverager.getDepositedBalance(address(this));
+        require(depositBalance+10**17>2*wETHinitialDeposit, "Leverage below expected value");
+        int256 debtBalance = leverager.getDebtBalance(address(this));
+    }
+
+    //probably also want to test situations where there is existing balance and debt on the caller
 }
