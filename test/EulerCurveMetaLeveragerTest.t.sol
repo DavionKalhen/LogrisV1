@@ -108,10 +108,16 @@ contract EulerCurveMetaLeveragerTest is Test {
         wETH.deposit{value:10 ether}();
         setVaultCapacity(8*wETHDecimalOffset);
         leverager.leverage(10*wETHDecimalOffset, 9*wETHDecimalOffset);
+        ////may need to adjust rhs for slippage
+        require(leverager.getDepositedBalance(address(this))==8*wETHDecimalOffset, "deposited funds too low");
     }
 
     function testVaultCapacityBetweenDepositPoolAndMaxLeverage() public {
-        
+        wETH.deposit{value:10 ether}();
+        setVaultCapacity(12*wETHDecimalOffset);
+        leverager.leverage(10*wETHDecimalOffset, 9*wETHDecimalOffset);
+        //may need to adjust rhs for slippage
+        require(leverager.getDepositedBalance(address(this))==12*wETHDecimalOffset, "deposited funds too low");        
     }
 
     function testUnhinderedLeverage() public {
