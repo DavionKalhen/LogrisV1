@@ -3,6 +3,7 @@ pragma solidity 0.8.19;
 import "../interfaces/ILeverager.sol";
 import "lib/openzeppelin-contracts/contracts/access/Ownable.sol";
 import "lib/openzeppelin-contracts/contracts/token/ERC20/IERC20.sol";
+import "../interfaces/wETH/IWETH.sol";
 import "../interfaces/alchemist/IAlchemistV2.sol";
 import "../interfaces/alchemist/ITokenAdapter.sol";
 import "../interfaces/euler/IFlashLoan.sol";
@@ -10,6 +11,7 @@ import "../interfaces/euler/DToken.sol";
 import "../interfaces/euler/Markets.sol";
 import "../interfaces/uniswap/TransferHelper.sol";
 import "../interfaces/curve/ICurveSwap.sol";
+import "../interfaces/curve/ICurvePool.sol";
 //import conosle log
 import "forge-std/console.sol";
 import {IStableMetaPool} from "../interfaces/curve/IStableMetaPool.sol";
@@ -131,9 +133,10 @@ contract EulerCurveMetaLeverager is ILeverager, Ownable {
     function swapDebtTokens(uint amount) internal {
         ICurveSwap curveSwap = ICurveSwap(dexPool);
         address swapTo = underlyingToken == weth ? 0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE : underlyingToken;
-        (, uint256 amountOut) = curveSwap.get_best_rate(debtToken, swapTo, amount);
+        (address pool, uint256 amountOut) = curveSwap.get_best_rate(debtToken, swapTo, amount);
         require(acceptableLoss(amount, amountOut), "Swap exceeds max acceptable loss");
-        uint256 amountRecieved = curveSwap.exchange_with_best_rate(debtToken, underlyingToken, amount, 1, address(this));
+        IERC20(debtToken).approve(pool, amount);
+        uint256 amountRecieved = ICurvePool(pool).exchange(1, 0, amount, 1);
         require(amountRecieved >= 1, "Swap failed");
     }
 
@@ -171,5 +174,10 @@ contract EulerCurveMetaLeverager is ILeverager, Ownable {
         alchemist.mint(amount/2, address(this));
         //Mint Debt Tokens
         return;
+    }
+    fallback() external payable {
+        IWETH(weth).deposit{value: msg.value}();
+        console.log("WETH deposited");
+        console.log(msg.value);
     }
 }
