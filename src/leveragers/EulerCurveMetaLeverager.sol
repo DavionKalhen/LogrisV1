@@ -28,6 +28,7 @@ contract EulerCurveMetaLeverager is ILeverager, Ownable {
     int128 underlyingTokenCurveIndex;
     uint256 slippage = 100; //1%
     uint256 maxExchangeLoss = 1000; //10%
+    address sender;
 
     constructor(address _yieldToken, address _underlyingToken, address _debtToken, address _flashLoan, address _debtSource, address _dexPool, int128 _debtTokenCurveIndex, int128 _underlyingTokenCurveIndex) {
         yieldToken = _yieldToken;
@@ -102,32 +103,36 @@ contract EulerCurveMetaLeverager is ILeverager, Ownable {
             uint flashLoanAmount = (depositAmount - (depositAmount/slippage)) + depositAmount < depositCapacity 
                 ? (depositAmount - (depositAmount/10))
                 : depositCapacity - depositAmount;
+
+            sender = msg.sender;
             dToken.flashLoan(flashLoanAmount, abi.encodePacked(flashLoanAmount, depositAmount, minDepositAmount));
             return;
         }
-        depositUnderlying(depositAmount, minDepositAmount);
-        mintDebtTokens(depositAmount);
+        depositUnderlying(depositAmount, minDepositAmount, msg.sender);
+        mintDebtTokens(depositAmount, msg.sender);
         swapDebtTokens(depositAmount);
         return;
     }
 
     function onFlashLoan(bytes memory data) external {
         (uint flashLoanAmount, uint depositAmount, uint minDepositAmount) = abi.decode(data, (uint, uint, uint));
-        depositUnderlying(flashLoanAmount + depositAmount, minDepositAmount + (flashLoanAmount - (flashLoanAmount/slippage)));
-        uint redeemable = getDepositedBalance(msg.sender);// - getDebtBalance(address(this));
-        console.log("redeemable:   ", redeemable/2);
+        console.log("Depositing");
+        depositUnderlying(flashLoanAmount + depositAmount, minDepositAmount + (flashLoanAmount - (flashLoanAmount/slippage)), sender);
+        uint redeemable = getDepositedBalance(sender);// - getDebtBalance(address(this));
+        console.log("Redeemable:   ", redeemable/2);
         console.log("Flash amount: ", flashLoanAmount);
-        mintDebtTokens(redeemable);
+        mintDebtTokens(redeemable, sender);
         console.log("Minted:       ", IERC20(debtToken).balanceOf(address(this)));
         swapDebtTokens(redeemable/2);
         console.log("Swapped");
         repayFlashLoan(flashLoanAmount);
+        sender = address(0);
     }
 
-    function depositUnderlying(uint amount, uint minAmountOut) internal {
+    function depositUnderlying(uint amount, uint minAmountOut, address sender_) internal {
         IAlchemistV2 alchemist = IAlchemistV2(debtSource);
         IERC20(underlyingToken).approve(address(alchemist), amount);
-        alchemist.depositUnderlying(yieldToken, amount, msg.sender, minAmountOut);
+        alchemist.depositUnderlying(yieldToken, amount, sender_, minAmountOut);
     }
 
     function swapDebtTokens(uint amount) internal {
@@ -163,7 +168,7 @@ contract EulerCurveMetaLeverager is ILeverager, Ownable {
             return 0;
     }
 
-    function mintDebtTokens(uint amount) internal {
+    function mintDebtTokens(uint amount, address sender_) internal {
         IAlchemistV2 alchemist = IAlchemistV2(debtSource);
         (uint maxMintable, ,) = alchemist.getMintLimitInfo();
         if (amount > maxMintable) {
@@ -171,7 +176,7 @@ contract EulerCurveMetaLeverager is ILeverager, Ownable {
             amount = maxMintable;
         }
         
-        alchemist.mintFrom(msg.sender, amount/2, address(this));
+        alchemist.mintFrom(sender_, amount/2, address(this));
         //Mint Debt Tokens
         return;
     }
