@@ -96,7 +96,10 @@ contract EulerCurveMetaLeveragerTest is Test {
     }
 
     function testVaultCapacityFullLeverage() public {
-
+        vm.prank(alchemist.admin());
+        alchemist.setMaximumExpectedValue(wstETHAddress, 0);
+        vm.expectRevert("Vault is full");
+        leverager.leverage(1 ether, 0.9 ether);
     }
 
     function testDepositPoolGreaterThanVaultCapacityLeverage() public {
@@ -110,7 +113,7 @@ contract EulerCurveMetaLeveragerTest is Test {
     function testUnhinderedLeverage() public {
         wETH.deposit{value:10 ether}();
         uint wETHinitialDeposit = wETH.balanceOf(address(this));
-        leverager.leverage(wETHinitialDeposit);
+        leverager.leverage(wETHinitialDeposit, wETHinitialDeposit-(wETHinitialDeposit/50));
         uint depositBalance = leverager.getDepositedBalance(address(this));
         require(depositBalance+10**17>2*wETHinitialDeposit, "Leverage below expected value");
         int256 debtBalance = leverager.getDebtBalance(address(this));
