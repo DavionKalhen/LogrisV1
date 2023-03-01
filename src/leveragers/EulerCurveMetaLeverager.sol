@@ -79,7 +79,7 @@ contract EulerCurveMetaLeverager is ILeverager, Ownable {
         require(depositCapacity > 0, "Vault is full");
         require(depositAmount > 0, "Deposit amount must be greater than 0");
 
-        TransferHelper.safeTransferFrom(yieldToken, msg.sender, address(this), depositAmount);
+        TransferHelper.safeTransferFrom(underlyingToken, msg.sender, address(this), depositAmount);
          
         if(depositAmount > depositCapacity) {
             // Vault can't hold all the deposit pool. Fill up the pool.
@@ -113,7 +113,7 @@ contract EulerCurveMetaLeverager is ILeverager, Ownable {
 
     function depositUnderlying(uint amount, uint minAmountOut) internal {
         IAlchemistV2 alchemist = IAlchemistV2(debtSource);
-        IERC20(yieldToken).approve(address(alchemist), amount);
+        IERC20(underlyingToken).approve(address(alchemist), amount);
         alchemist.depositUnderlying(yieldToken, amount, address(this), minAmountOut);
     }
 
