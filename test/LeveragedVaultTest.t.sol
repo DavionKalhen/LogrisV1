@@ -56,12 +56,6 @@ contract LeveragedVaultTest is Test {
     //     assertEq(ret_vault, vault);
     // }
 
-    // this should be moved to the leverager test and the leverager should be whitelisted
-    // function testWhitelisted() public {
-    //     bool whitelisted = whitelist.isWhitelisted(address(leveragedVaultFactory));
-    //     assertEq(whitelisted, true);
-    // }
-
     // function testDepositToVault() public {
     //     leveragedVaultFactory.createVault(address(dai), daiVaultAddress);
     //     leveragedVaultFactory.whitelistAddress(address(this));
