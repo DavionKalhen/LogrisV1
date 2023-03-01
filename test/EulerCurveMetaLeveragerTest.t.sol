@@ -26,7 +26,6 @@ contract EulerCurveMetaLeveragerTest is Test {
     IWETH wETH;
     uint wETHDecimalOffset;
     uint256 constant minimumCollateralization = 2000000000000000000;
-    address user;
 
     function setUp() public {
         vm.deal(address(this), 200 ether);
@@ -34,11 +33,8 @@ contract EulerCurveMetaLeveragerTest is Test {
         //setup whitelist
         alchemist = IAlchemistV2(alchemistV2Address);
         whitelist = Whitelist(alchemist.whitelist());
-        user = vm.addr(1);
-        vm.deal(user, 200 ether);
         vm.startPrank(whitelist.owner());
         whitelist.add(address(leverager));
-        whitelist.add(user);
         whitelist.add(address(this));
         vm.stopPrank();
         require(whitelist.isWhitelisted(address(leverager)), "failed to whitelist");
@@ -119,18 +115,15 @@ contract EulerCurveMetaLeveragerTest is Test {
     }
 
     function testUnhinderedLeverage() public {
-        vm.startPrank(user);
-        console.log("User ", user);
         wETH.deposit{value:10 ether}();
-        uint wETHinitialDeposit = wETH.balanceOf(user);
+        uint wETHinitialDeposit = wETH.balanceOf(address(this));
         wETH.approve(address(leverager), wETHinitialDeposit);
         alchemist.approveMint(address(leverager), wETHinitialDeposit*10000000);
-        alchemist.approveMint(address(this), wETHinitialDeposit*10000000);
         leverager.leverage(wETHinitialDeposit, wETHinitialDeposit-(wETHinitialDeposit/5));
-        uint depositBalance = leverager.getDepositedBalance(user);
+        uint depositBalance = leverager.getDepositedBalance(address(this));
 
         require(depositBalance>wETHinitialDeposit, "Leverage below expected value");
-        int256 debtBalance = leverager.getDebtBalance(user);
+        int256 debtBalance = leverager.getDebtBalance(address(this));
         vm.stopPrank();
     }
     //probably also want to test situations where there is existing balance and debt on the caller
