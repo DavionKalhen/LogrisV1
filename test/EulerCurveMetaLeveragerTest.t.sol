@@ -16,13 +16,10 @@ contract EulerCurveMetaLeveragerTest is Test {
     address wETHAddress = 0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2;
     address alETHAddress = 0x0100546F2cD4C9D97f798fFC9755E47865FF7Ee6;
     address eulerMarketsAddress = 0x3520d5a913427E6F0D6A83E07ccD4A4da316e4d3;
-    address alETHCurvePoolAddress = 0x99a58482BD75cbab83b27EC03CA68fF489b5788f;
+    address curveFactoryAddress = 0x99a58482BD75cbab83b27EC03CA68fF489b5788f;
     address alchemistV2Address = 0x062Bf725dC4cDF947aa79Ca2aaCCD4F385b13b5c;
     //this is the alUSD alchemist
     //address alchemistV2Address = 0x5C6374a2ac4EBC38DeA0Fc1F8716e5Ea1AdD94dd;
-    //i,j determined by coins view method on contract
-    int128 ethPoolIndex = 0;
-    int128 alETHPoolIndex = 1;
     ILeverager leverager;
     IAlchemistV2 alchemist;
     Whitelist whitelist;
@@ -33,7 +30,7 @@ contract EulerCurveMetaLeveragerTest is Test {
 
     function setUp() public {
         vm.deal(address(this), 200 ether);
-        leverager = new EulerCurveMetaLeverager(wstETHAddress, wETHAddress, alETHAddress, eulerMarketsAddress, alchemistV2Address, alETHCurvePoolAddress, alETHPoolIndex, ethPoolIndex);
+        leverager = new EulerCurveMetaLeverager(wstETHAddress, wETHAddress, alETHAddress, eulerMarketsAddress, alchemistV2Address, curveFactoryAddress);
         //setup whitelist
         alchemist = IAlchemistV2(alchemistV2Address);
         whitelist = Whitelist(alchemist.whitelist());
@@ -99,15 +96,22 @@ contract EulerCurveMetaLeveragerTest is Test {
         require(result+10**17 > 9*wETHDecimalOffset, "Redeemable Balance lookup failed");
     }
 
-    function testVaultCapacityFullLeverage() public {
+    function setVaultCapacity(uint capacity) public {
+        IAlchemistV2.YieldTokenParams memory params = alchemist.getYieldTokenParameters(wstETHAddress);
         vm.prank(alchemist.admin());
-        alchemist.setMaximumExpectedValue(wstETHAddress, 0);
+        alchemist.setMaximumExpectedValue(wstETHAddress, params.expectedValue+capacity);
+    }
+
+    function testVaultCapacityFullLeverage() public {
+        setVaultCapacity(0);
         vm.expectRevert("Vault is full");
-        leverager.leverage(1 ether, 0.9 ether);
+        leverager.leverage(10, 9);
     }
 
     function testDepositPoolGreaterThanVaultCapacityLeverage() public {
-
+        wETH.deposit{value:10 ether}();
+        setVaultCapacity(8*wETHDecimalOffset);
+        leverager.leverage(10*wETHDecimalOffset, 9*wETHDecimalOffset);
     }
 
     function testVaultCapacityBetweenDepositPoolAndMaxLeverage() public {
