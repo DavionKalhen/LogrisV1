@@ -54,20 +54,20 @@ contract LeveragedVault is ERC4626, Ownable, ILeveragedVault {
         return shares * getVaultRedeemableBalance() / totalSupply();
     }
 
-    function depositUnderlying(uint amount, address recipient) public returns(uint) {
-        uint shares = super.deposit(amount, recipient);
-        emit Deposit(recipient, address(underlyingToken), amount);
+    function depositUnderlying(uint amount) public returns(uint) {
+        uint shares = super.deposit(amount, msg.sender);
+        emit Deposit(msg.sender, address(underlyingToken), amount);
         return shares;
     }
 
-    function withdrawUnderlying(uint shares, address to) external returns(uint amount) {
+    function withdrawUnderlying(uint shares) external returns(uint amount) {
         require(shares <= balanceOf(msg.sender), "You don't have enough deposited");
         uint underlyingWithdrawAmount = convertSharesToUnderlyingTokens(shares);
         uint depositPoolBalance = underlyingToken.balanceOf(address(this));
         if(depositPoolBalance < underlyingWithdrawAmount) {
             leverager.withdrawUnderlying(underlyingWithdrawAmount-depositPoolBalance);
         }
-        amount = super.withdraw(shares, to, address(this));
+        amount = super.withdraw(shares, msg.sender, address(this));
         emit Withdraw(msg.sender, address(underlyingToken), shares);
         return amount;
     }
