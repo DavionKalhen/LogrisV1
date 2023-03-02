@@ -151,6 +151,10 @@ contract EulerCurveMetaLeverager is ILeverager, Ownable {
         emit DebugValue(amount);
         emit DebugValue(minAmountOut);
         emit DebugValue(getDepositCapacity());
+        //[FAIL. Reason: Custom Error a3528cf5:(0x7f39C581F595B53c5cb19bD0b3f8dA6c935E2Ca0, 7193215267764540062, 3007188626873261449724)]
+        //parameter 1 is the yield token address
+        //parameter 2 is the shares returned
+        //parameter 3 might be the capacity but I've tried overriding amount on deposit to very small values and it still fails.
         uint depositedShares = alchemist.depositUnderlying(yieldToken, amount, _sender, minAmountOut);
         emit DepositUnderlying(underlyingToken, amount, alchemist.convertSharesToUnderlyingTokens(yieldToken, depositedShares));
     }
