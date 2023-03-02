@@ -39,10 +39,6 @@ contract EulerCurveMetaLeveragerTest is Test {
         vm.stopPrank();
         require(whitelist.isWhitelisted(address(leverager)), "failed to whitelist");
 
-        //add pool capacity
-        vm.prank(alchemist.admin());
-        alchemist.setMaximumExpectedValue(wstETHAddress, type(uint256).max);
-
         //setup underlying approval
         wETH = IWETH(wETHAddress);
         wETHDecimalOffset=10**wETH.decimals();
@@ -106,7 +102,9 @@ contract EulerCurveMetaLeveragerTest is Test {
 
     function testDepositPoolGreaterThanVaultCapacityLeverage() public {
         wETH.deposit{value:10 ether}();
+        wETH.approve(address(leverager), wETH.balanceOf(address(this)));
         setVaultCapacity(8*wETHDecimalOffset);
+        
         leverager.leverage(10*wETHDecimalOffset, 9*wETHDecimalOffset);
         ////may need to adjust rhs for slippage
         require(leverager.getDepositedBalance(address(this))==8*wETHDecimalOffset, "deposited funds too low");
@@ -114,7 +112,9 @@ contract EulerCurveMetaLeveragerTest is Test {
 
     function testVaultCapacityBetweenDepositPoolAndMaxLeverage() public {
         wETH.deposit{value:10 ether}();
+        wETH.approve(address(leverager), wETH.balanceOf(address(this)));
         setVaultCapacity(12*wETHDecimalOffset);
+
         leverager.leverage(10*wETHDecimalOffset, 9*wETHDecimalOffset);
         //may need to adjust rhs for slippage
         require(leverager.getDepositedBalance(address(this))==12*wETHDecimalOffset, "deposited funds too low");        
@@ -124,6 +124,8 @@ contract EulerCurveMetaLeveragerTest is Test {
         wETH.deposit{value:10 ether}();
         uint wETHinitialDeposit = wETH.balanceOf(address(this));
         wETH.approve(address(leverager), wETHinitialDeposit);
+        setVaultCapacity(30*wETHDecimalOffset);
+
         alchemist.approveMint(address(leverager), wETHinitialDeposit*10000000);
         leverager.leverage(wETHinitialDeposit, wETHinitialDeposit-(wETHinitialDeposit/5));
         uint depositBalance = leverager.getDepositedBalance(address(this));
