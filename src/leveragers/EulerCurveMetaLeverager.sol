@@ -66,7 +66,7 @@ contract EulerCurveMetaLeverager is ILeverager, Ownable {
         }
     }
 
-    //return amount denominated in yield tokens
+    //return amount denominated in underlying tokens
     function getDepositCapacity() public view returns(uint amount) {
         IAlchemistV2 alchemist = IAlchemistV2(debtSource);
         IAlchemistV2.YieldTokenParams memory params = alchemist.getYieldTokenParameters(yieldToken);
@@ -104,11 +104,10 @@ contract EulerCurveMetaLeverager is ILeverager, Ownable {
         TransferHelper.safeTransferFrom(underlyingToken, msg.sender, address(this), depositAmount);
         IAlchemistV2 alchemist = IAlchemistV2(debtSource);
 
-        uint256 underlyingCapacity = alchemist.convertYieldTokensToUnderlying(yieldToken, depositCapacity);
-        if(underlyingCapacity < depositAmount) {
+        if(depositCapacity < depositAmount) {
             console.log("vault capacity smaller than deposit");
             // Vault can't hold all the deposit pool. Fill up the pool.
-            depositAmount = underlyingCapacity;
+            depositAmount = depositCapacity;
             //minDepositAmount is denominated in yieldTokens
             uint256 minDepositAmount = _acceptableTradeOutput(alchemist.convertUnderlyingTokensToYield(yieldToken, depositAmount), underlyingSlippageBasisPoints);
             console.log("Basic deposit");
