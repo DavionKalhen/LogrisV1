@@ -88,7 +88,10 @@ contract EulerCurveMetaLeverager is ILeverager, Ownable {
         uint256 priceAdjustedDepositAmount = depositAmount * adapter.price() / 10**underlyingParams.decimals;
         if(priceAdjustedDepositAmount > depositCapacity) {
             // Vault can't hold all the deposit pool. Fill up the pool.
+            minDepositAmount = minDepositAmount * depositCapacity / depositAmount;
             depositAmount = depositCapacity;
+            console.log("Deposit amount: ", depositAmount);
+            console.log("Min deposit amount: ", minDepositAmount);
         }
         else {
             //Calculate flashloan amount. Amount flashed is less a % from total to account for slippage.
@@ -103,9 +106,8 @@ contract EulerCurveMetaLeverager is ILeverager, Ownable {
             dToken.flashLoan(flashLoanAmount, abi.encodePacked(flashLoanAmount, depositAmount, minDepositAmount));
             return;
         }
+        console.log("Basic deposit");
         _depositUnderlying(depositAmount, minDepositAmount, msg.sender);
-        _mintDebtTokens(depositAmount, msg.sender);
-        _swapDebtTokens(depositAmount);
         return;
     }
 
