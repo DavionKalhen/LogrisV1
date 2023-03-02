@@ -11,7 +11,7 @@ import "../interfaces/euler/DToken.sol";
 import "../interfaces/euler/Markets.sol";
 import "../interfaces/uniswap/TransferHelper.sol";
 import "../interfaces/curve/ICurveFactory.sol";
-//import conosle log
+//import console log
 import "forge-std/console.sol";
 
 contract EulerCurveMetaLeverager is ILeverager, Ownable {
@@ -23,8 +23,6 @@ contract EulerCurveMetaLeverager is ILeverager, Ownable {
     address public dex;
     address constant curveEth = 0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE;
     address constant weth = 0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2;
-
-    event DebugValue(uint256);
 
     constructor(address _yieldToken, address _underlyingToken, address _debtToken, address _flashLoan, address _debtSource, address _dex) {
         yieldToken = _yieldToken;
@@ -147,13 +145,6 @@ contract EulerCurveMetaLeverager is ILeverager, Ownable {
     function _depositUnderlying(uint amount, uint minAmountOut, address _sender) internal returns(uint shares) {
         IAlchemistV2 alchemist = IAlchemistV2(debtSource);
         IERC20(underlyingToken).approve(address(alchemist), amount);
-        emit DebugValue(amount);
-        emit DebugValue(minAmountOut);
-        emit DebugValue(getDepositCapacity());
-        //[FAIL. Reason: Custom Error a3528cf5:(0x7f39C581F595B53c5cb19bD0b3f8dA6c935E2Ca0, 7193215267764540062, 3007188626873261449724)]
-        //parameter 1 is the yield token address
-        //parameter 2 is the shares returned
-        //parameter 3 might be the capacity but I've tried overriding amount on deposit to very small values and it still fails.
         uint depositedShares = alchemist.depositUnderlying(yieldToken, amount, _sender, minAmountOut);
         emit DepositUnderlying(underlyingToken, amount, alchemist.convertSharesToUnderlyingTokens(yieldToken, depositedShares));
     }
