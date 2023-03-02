@@ -138,6 +138,9 @@ contract EulerCurveMetaLeveragerTest is Test {
         uint depositBalance = leverager.getDepositedBalance(address(this));
         console.log("final deposit balance");
         emit DebugValue(depositBalance);
+        int256 debtBalance = leverager.getDebtBalance(address(this));
+        console.log("final debt balance");
+        emit DebugValue(debtBalance);
         require(depositBalance>=11 ether, "deposited funds too low");        
     }
 
@@ -148,12 +151,17 @@ contract EulerCurveMetaLeveragerTest is Test {
         setVaultCapacity(wstETHAddress, 30 ether);
 
         alchemist.approveMint(address(leverager), wETHinitialDeposit*10000000);
-        leverager.leverage(wETHinitialDeposit, 1000, 1000);
+        leverager.leverage(wETHinitialDeposit, 100, 1000);
+        
         uint depositBalance = leverager.getDepositedBalance(address(this));
+        console.log("final deposit balance");
+        emit DebugValue(depositBalance);
+        require(depositBalance>=18 ether, "deposited funds too low");
 
-        require(depositBalance>wETHinitialDeposit, "Leverage below expected value");
         int256 debtBalance = leverager.getDebtBalance(address(this));
-        vm.stopPrank();
+        console.log("final debt balance");
+        emit DebugValue(debtBalance);
+        require(depositBalance>=11 ether, "deposited funds too low"); 
     }
     //probably also want to test situations where there is existing balance and debt on the caller
 }
