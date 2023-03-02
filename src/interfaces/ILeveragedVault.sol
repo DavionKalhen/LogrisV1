@@ -3,8 +3,8 @@ import "lib/openzeppelin-contracts/contracts/interfaces/IERC4626.sol";
 pragma solidity ^0.8.0;
 
 interface ILeveragedVault is IERC4626 {
-    event Deposit(address indexed sender, address indexed yieldToken, uint256 amount);
-    event Withdraw(address indexed sender, address indexed yieldToken, uint256 shares);
+    event DepositUnderlying(address indexed sender, address indexed underlyingToken, uint256 amount);
+    event WithdrawUnderlying(address indexed sender, address indexed underlyingToken, uint256 shares);
     event Leverage(address indexed yieldToken, uint256 depositAmount, uint256 debtAmount);
 
     error SlippageExceeded();

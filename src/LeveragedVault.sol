@@ -56,7 +56,7 @@ contract LeveragedVault is ERC4626, Ownable, ILeveragedVault {
 
     function depositUnderlying(uint amount) public returns(uint) {
         uint shares = super.deposit(amount, msg.sender);
-        emit Deposit(msg.sender, address(underlyingToken), amount);
+        emit DepositUnderlying(msg.sender, address(underlyingToken), amount);
         return shares;
     }
 
@@ -68,7 +68,7 @@ contract LeveragedVault is ERC4626, Ownable, ILeveragedVault {
             leverager.withdrawUnderlying(underlyingWithdrawAmount-depositPoolBalance);
         }
         amount = super.withdraw(shares, msg.sender, address(this));
-        emit Withdraw(msg.sender, address(underlyingToken), shares);
+        emit WithdrawUnderlying(msg.sender, address(underlyingToken), shares);
         return amount;
     }
 
