@@ -24,6 +24,8 @@ contract EulerCurveMetaLeverager is ILeverager, Ownable {
     address constant curveEth = 0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE;
     address constant weth = 0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2;
 
+    event DebugValue(uint256);
+
     constructor(address _yieldToken, address _underlyingToken, address _debtToken, address _flashLoan, address _debtSource, address _dex) {
         yieldToken = _yieldToken;
         underlyingToken = _underlyingToken;
@@ -64,8 +66,18 @@ contract EulerCurveMetaLeverager is ILeverager, Ownable {
         }
     }
 
+    //return amount denominated in yield tokens
+    function getDepositCapacity() public view returns(uint amount) {
+        IAlchemistV2 alchemist = IAlchemistV2(debtSource);
+        IAlchemistV2.YieldTokenParams memory params = alchemist.getYieldTokenParameters(yieldToken);
+        if(params.maximumExpectedValue >= params.expectedValue)
+            amount = params.maximumExpectedValue - params.expectedValue;
+        else
+            amount = 0;
+    }
+
     //return amount denominated in debt tokens
-    function getMintableBalance(address _depositor) public view returns(uint amount) {
+    function getMintCapacity(address _depositor) public view returns(uint amount) {
         require(false, "Not yet implemented");
     }
 
@@ -94,12 +106,11 @@ contract EulerCurveMetaLeverager is ILeverager, Ownable {
 
         uint256 underlyingCapacity = alchemist.convertYieldTokensToUnderlying(yieldToken, depositCapacity);
         if(underlyingCapacity < depositAmount) {
+            console.log("vault capacity smaller than deposit");
             // Vault can't hold all the deposit pool. Fill up the pool.
             depositAmount = underlyingCapacity;
             //minDepositAmount is denominated in yieldTokens
             uint256 minDepositAmount = _acceptableTradeOutput(alchemist.convertUnderlyingTokensToYield(yieldToken, depositAmount), underlyingSlippageBasisPoints);
-            console.log("Deposit amount: ", depositAmount);
-            console.log("Min deposit amount: ", minDepositAmount);
             console.log("Basic deposit");
             _depositUnderlying(depositAmount, minDepositAmount, msg.sender);
             return;            
@@ -107,7 +118,7 @@ contract EulerCurveMetaLeverager is ILeverager, Ownable {
         else {
             address dTokenAddress = _getDTokenAddress();
             DToken dToken = DToken(dTokenAddress);
-            uint flashLoanAmount = _calculateFlashLoanAmount(dTokenAddress, depositAmount, debtSlippageBasisPoints, depositCapacity);
+            uint flashLoanAmount = _calculateFlashLoanAmount(depositAmount, debtSlippageBasisPoints, depositCapacity);
             bytes memory data = abi.encode(msg.sender, flashLoanAmount, depositAmount, underlyingSlippageBasisPoints, debtSlippageBasisPoints);
             dToken.flashLoan(flashLoanAmount, data);
             return;
@@ -134,10 +145,13 @@ contract EulerCurveMetaLeverager is ILeverager, Ownable {
         _repayFlashLoan(flashLoanAmount);
     }
 
-    function _depositUnderlying(uint amount, uint minAmountOut, address sender_) internal returns(uint shares) {
+    function _depositUnderlying(uint amount, uint minAmountOut, address _sender) internal returns(uint shares) {
         IAlchemistV2 alchemist = IAlchemistV2(debtSource);
         IERC20(underlyingToken).approve(address(alchemist), amount);
-        uint depositedShares = alchemist.depositUnderlying(yieldToken, amount, sender_, minAmountOut);
+        emit DebugValue(amount);
+        emit DebugValue(minAmountOut);
+        emit DebugValue(getDepositCapacity());
+        uint depositedShares = alchemist.depositUnderlying(yieldToken, amount, _sender, minAmountOut);
         emit DepositUnderlying(underlyingToken, amount, alchemist.convertSharesToUnderlyingTokens(yieldToken, depositedShares));
     }
 
@@ -197,7 +211,7 @@ contract EulerCurveMetaLeverager is ILeverager, Ownable {
 
         return all these and use them for the remainder of the flow
     */
-    function _calculateFlashLoanAmount(address dTokenAddress, uint depositAmount, uint32 debtSlippageBasisPoints, uint depositCapacity) internal returns (uint flashLoanAmount) {
+    function _calculateFlashLoanAmount(uint depositAmount, uint32 debtSlippageBasisPoints, uint depositCapacity) internal returns (uint flashLoanAmount) {
         //Calculate flashloan amount. Amount flashed is less a % from total to account for slippage.
         flashLoanAmount = (depositAmount - (depositAmount/debtSlippageBasisPoints)) + depositAmount < depositCapacity 
             ? (depositAmount - (depositAmount/10))
@@ -234,15 +248,6 @@ contract EulerCurveMetaLeverager is ILeverager, Ownable {
 
     function withdraw(uint shares) external returns(uint amount) {
         require(false, "Not yet implemented");
-    }
-
-    function getDepositCapacity() public view returns(uint) {
-        IAlchemistV2 alchemist = IAlchemistV2(debtSource);
-        IAlchemistV2.YieldTokenParams memory params = alchemist.getYieldTokenParameters(yieldToken);
-        if(params.maximumExpectedValue >= params.expectedValue)
-            return params.maximumExpectedValue - params.expectedValue;
-        else
-            return 0;
     }
 
     function _mintDebtTokens(uint amount, address sender_) internal {
