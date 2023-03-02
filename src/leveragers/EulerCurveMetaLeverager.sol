@@ -152,9 +152,9 @@ contract EulerCurveMetaLeverager is ILeverager, Ownable {
         This means we need to flash loan less than the amount to be deposited (slippage)
         Further we need to account for existing credit (which lets us flash more)
         And account for debt peg deviation + debt to underlying slippage
-        The amountToFlashloan=mintableDebtAfterDeposit*debtToUnderlyingTradeRatio*slippageRatio
+        The flashloanAmount=mintableDebtAfterDeposit*debtToUnderlyingTradeRatio*slippage
         mintableDebtAfterDeposit=mintableDebtBeforeDeposit+changeInMintableDebtFromDeposit
-        changeInMintableDebtFromDeposit=#NYI
+        changeInMintableDebtFromDeposit=(depositAmount+flashloanAmount)*underlyingToYieldTradeRatio*slippage/2
 
         e.g. deposit 10 ETH
         plan would be to flashloan 10 ETH but the slippage is 1% so we only get 19.8 ETH of credit
@@ -166,6 +166,36 @@ contract EulerCurveMetaLeverager is ILeverager, Ownable {
 
         We need to follow the algebra above to basically calculate the entire expected flow right here
         Then pass those values down through the stack as the minOutput values to depositUnderlying and exchange
+        e.g.
+        deposit amount ETH                                              10
+        borrow X ETH
+        deposit amount+X ETH                                            10+x
+        receive (amount+X)*underlyingSlippage credit                    .99*(10+x)
+        borrow ((amount+X)*underlyingSlippage)/2+credit alETH           (.99*(10+x)/2)+credit
+        trade borrow alETH for debtToUnderlyingRatio*debtSlippage       .99*.98*((.99*(10+x)/2)+credit)
+        repay Y ETH
+        amount borrowed = X
+        amount repayed = Y
+        Y=X
+
+        debtTradeLoss = debtToUnderlyingRatio * debtSlippage
+        depositTradeLoss = underlyingSlippage
+        totalTradeLoss = debtTradeLoss*depositTradeLoss
+
+        x=.99*.98*((.99*(10+x)/2)+credit),                          read as debtTradeLoss * (depositLoss*deposit+credit)
+        x=.99*.98*.99*(10+x)/2+.99*.98*credit                       multiplying the debtTradeLoss loss into deposit and credit
+        x=(.99*.98*.99*10+.99*.98*.99*x)/2+.99*.98*credit           multiplying the depositTradeLoss into the deposit and flash loan values
+        2x=(2*.99*.98*.99*10)+(.99*.98*.99*x)+2*.99*.98*credit      multipying by 2
+        2x-(.99*.98*.99*x)=(2*.99*.98*.99*10)+2*.99*.98*credit      moved x from rhs to lhs
+        (2-(.99*.98*.99))*x=(2*.99*.98*.99*10)+2*.99*.98*credit     factor x out
+        x=((2*.99*.98*.99*10)+2*.99*.98*credit)/(2-(.99*.98*.99))   divide to solve for x
+
+        flashLoanAmount = 2*(totalTradeLoss*depositAmount+debtTradeLoss*credit)/(2-totalTradeLoss)
+        minDepositUnderlyingAmount = (depositAmount+flashLoanAmount)*underlyingSlippage
+        mintAmount = (minDepositUnderlyingAmount/2)+credit
+        minDebtTradeAmount = mintAmount*debtToUnderlyingRatio*debtSlippage
+
+        return all these and use them for the remainder of the flow
     */
     function _calculateFlashLoanAmount(address dTokenAddress, uint depositAmount, uint32 debtSlippageBasisPoints, uint depositCapacity) internal returns (uint flashLoanAmount) {
         //Calculate flashloan amount. Amount flashed is less a % from total to account for slippage.
