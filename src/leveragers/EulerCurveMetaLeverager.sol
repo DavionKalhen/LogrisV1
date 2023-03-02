@@ -179,7 +179,7 @@ contract EulerCurveMetaLeverager is ILeverager, Ownable {
             amount = maxMintable;
         }
         //Mint Debt Tokens
-        alchemist.mintFrom(sender_, amount, address(this));
+        alchemist.mintFrom(sender_, amount/2, address(this));
         emit Mint(yieldToken, amount);
         return;
     }
