@@ -97,7 +97,7 @@ contract EulerCurveMetaLeveragerTest is Test {
     function testVaultCapacityFullLeverage() public {
         setVaultCapacity(0);
         vm.expectRevert("Vault is full");
-        leverager.leverage(10, 9);
+        leverager.leverage(10, 100, 100);
     }
 
     function testDepositPoolGreaterThanVaultCapacityLeverage() public {
@@ -105,7 +105,7 @@ contract EulerCurveMetaLeveragerTest is Test {
         wETH.approve(address(leverager), wETH.balanceOf(address(this)));
         setVaultCapacity(8*wETHDecimalOffset);
         alchemist.approveMint(address(leverager), 10*wETHDecimalOffset*10);
-        leverager.leverage(10*wETHDecimalOffset, 1000);
+        leverager.leverage(10*wETHDecimalOffset, 100, 100);
         ////may need to adjust rhs for slippage
         require(leverager.getDepositedBalance(address(this)) > 0, "deposited funds too low");
     }
@@ -115,7 +115,7 @@ contract EulerCurveMetaLeveragerTest is Test {
         wETH.approve(address(leverager), wETH.balanceOf(address(this)));
         setVaultCapacity(12*wETHDecimalOffset);
         alchemist.approveMint(address(leverager), 10*wETHDecimalOffset*10);
-        leverager.leverage(10*wETHDecimalOffset, 9*wETHDecimalOffset);
+        leverager.leverage(10*wETHDecimalOffset, 100, 100);
         //may need to adjust rhs for slippage
         require(leverager.getDepositedBalance(address(this))==12*wETHDecimalOffset, "deposited funds too low");        
     }
@@ -127,7 +127,7 @@ contract EulerCurveMetaLeveragerTest is Test {
         setVaultCapacity(30*wETHDecimalOffset);
 
         alchemist.approveMint(address(leverager), wETHinitialDeposit*10000000);
-        leverager.leverage(wETHinitialDeposit, wETHinitialDeposit-(wETHinitialDeposit/5));
+        leverager.leverage(wETHinitialDeposit, 1000, 1000);
         uint depositBalance = leverager.getDepositedBalance(address(this));
 
         require(depositBalance>wETHinitialDeposit, "Leverage below expected value");
