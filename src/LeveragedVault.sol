@@ -11,15 +11,17 @@ contract LeveragedVault is ERC4626, Ownable, ILeveragedVault {
     ILeverager private leverager;
     IERC20 private yieldToken;
     IERC20 private underlyingToken;
-    uint32 public allowedSlippageBasisPoints;
+    uint32 public underlyingSlippageBasisPoints;
+    uint32 public debtSlippageBasisPoints;
 
-    constructor(string memory _tokenName, string memory _tokenDescription, address _yieldToken, address _underlyingToken, address _leverager, uint32 _allowedSlippageBasisPoints)
+    constructor(string memory _tokenName, string memory _tokenDescription, address _yieldToken, address _underlyingToken, address _leverager, uint32 _underlyingSlippageBasisPoints, uint32 _debtSlippageBasisPoints)
     ERC4626(IERC20(_yieldToken))
     ERC20(_tokenDescription, _tokenName) {
         leverager = ILeverager(_leverager);
         yieldToken = IERC20(_yieldToken);
         underlyingToken = IERC20(_underlyingToken);
-        allowedSlippageBasisPoints = _allowedSlippageBasisPoints;
+        underlyingSlippageBasisPoints = _underlyingSlippageBasisPoints;
+        debtSlippageBasisPoints = _debtSlippageBasisPoints;
     }
 
     function getYieldToken() external view returns(address){
@@ -73,9 +75,9 @@ contract LeveragedVault is ERC4626, Ownable, ILeveragedVault {
     }
 
     function leverage() external {
-        uint256 minAmountOut = (yieldToken.balanceOf(address(this)) * (10000 - allowedSlippageBasisPoints)) / 10000;
-        uint256 amountOut = yieldToken.balanceOf(address(this));
-        leverager.leverage(minAmountOut, amountOut);
-        emit Leverage(address(yieldToken), amountOut, amountOut);
+        uint256 depositAmount = underlyingToken.balanceOf(address(this));
+        leverager.leverage(depositAmount, underlyingSlippageBasisPoints, debtSlippageBasisPoints);
+        //to fix this emit we need to look at the account balance and debt balance before and after leverage were called
+        emit Leverage(address(underlyingToken), depositAmount, depositAmount);
     }
 }

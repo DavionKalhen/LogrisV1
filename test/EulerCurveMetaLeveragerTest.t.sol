@@ -27,6 +27,8 @@ contract EulerCurveMetaLeveragerTest is Test {
     uint wETHDecimalOffset;
     uint256 constant minimumCollateralization = 2000000000000000000;
 
+    event DebugValue(uint);
+
     function setUp() public {
         vm.deal(address(this), 200 ether);
         leverager = new EulerCurveMetaLeverager(wstETHAddress, wETHAddress, alETHAddress, eulerMarketsAddress, alchemistV2Address, curveFactoryAddress);
@@ -46,10 +48,27 @@ contract EulerCurveMetaLeveragerTest is Test {
         wETH.approve(address(alchemistV2Address), type(uint256).max);
     }
 
+    // denominated in underlying token
+    function setVaultCapacity(address yieldToken, uint underlyingCapacity) public {
+        IAlchemistV2.YieldTokenParams memory params = alchemist.getYieldTokenParameters(yieldToken);
+        console.log("old ceiling");
+        emit DebugValue(params.maximumExpectedValue);
+        vm.prank(alchemist.admin());
+        alchemist.setMaximumExpectedValue(yieldToken, params.expectedValue + underlyingCapacity);
+        params = alchemist.getYieldTokenParameters(yieldToken);
+        uint newUnderlyingCapacity = params.maximumExpectedValue - params.expectedValue;
+        console.log("new ceiling");
+        emit DebugValue(params.maximumExpectedValue);
+        console.log("capacity");
+        emit DebugValue(params.maximumExpectedValue-params.expectedValue);
+        emit DebugValue(newUnderlyingCapacity);
+        require(newUnderlyingCapacity+0.01 ether > underlyingCapacity, "failed to update vault capacity");
+    }
+
     function deposit10Weth() internal {
         wETH.deposit{value:10 ether}();
         uint wETHBalance = wETH.balanceOf(address(this));
-        require(10*wETHDecimalOffset==wETHBalance,"wETH failed to wrap");
+        require(10 ether==wETHBalance,"wETH failed to wrap");
 
         //minimumAmountOut is denominated in yield tokens so this is fragile.
         uint256 minimumAmountOut = 8*wETHDecimalOffset;
@@ -67,12 +86,14 @@ contract EulerCurveMetaLeveragerTest is Test {
     }
 
     function testGetDepositedBalance() public {
+        setVaultCapacity(wstETHAddress, 10.01 ether);
         deposit10Weth();
         uint256 result = leverager.getDepositedBalance(address(this));
         require(result > 8*wETHDecimalOffset, "Deposit Balance lookup failed");
     }
 
     function testGetDebtBalance() public {
+        setVaultCapacity(wstETHAddress, 10.01 ether);
         deposit10Weth();
         uint alETHAmount = borrow1alETH();
         int256 debtTokens = leverager.getDebtBalance(address(this));
@@ -82,57 +103,65 @@ contract EulerCurveMetaLeveragerTest is Test {
     }
 
     function testGetRedeemableBalance() public {
+        setVaultCapacity(wstETHAddress, 10.01 ether);
         deposit10Weth();
         uint alETHAmount = borrow1alETH();
         uint256 result = leverager.getRedeemableBalance(address(this));
         require(result+10**17 > 9*wETHDecimalOffset, "Redeemable Balance lookup failed");
     }
 
-    function setVaultCapacity(uint capacity) public {
-        IAlchemistV2.YieldTokenParams memory params = alchemist.getYieldTokenParameters(wstETHAddress);
-        vm.prank(alchemist.admin());
-        alchemist.setMaximumExpectedValue(wstETHAddress, params.expectedValue+capacity);
-    }
-
     function testVaultCapacityFullLeverage() public {
-        setVaultCapacity(0);
+        setVaultCapacity(wstETHAddress, 0);
         vm.expectRevert("Vault is full");
-        leverager.leverage(10, 9);
+        leverager.leverage(10, 100, 100);
     }
 
     function testDepositPoolGreaterThanVaultCapacityLeverage() public {
         wETH.deposit{value:10 ether}();
         wETH.approve(address(leverager), wETH.balanceOf(address(this)));
-        setVaultCapacity(8*wETHDecimalOffset);
-        alchemist.approveMint(address(leverager), 10*wETHDecimalOffset*10);
-        leverager.leverage(10*wETHDecimalOffset, 1000);
-        ////may need to adjust rhs for slippage
-        require(leverager.getDepositedBalance(address(this)) > 0, "deposited funds too low");
+        setVaultCapacity(wstETHAddress, 8 ether);
+        leverager.leverage(10 ether, 100, 100);
+
+        uint depositBalance = leverager.getDepositedBalance(address(this));
+        console.log("final deposit balance");
+        emit DebugValue(depositBalance);
+        require(depositBalance > 7.93 ether, "deposited funds too low");
     }
 
     function testVaultCapacityBetweenDepositPoolAndMaxLeverage() public {
-        wETH.deposit{value:10*wETHDecimalOffset}();
+        wETH.deposit{value:10 ether}();
         wETH.approve(address(leverager), wETH.balanceOf(address(this)));
-        setVaultCapacity(12*wETHDecimalOffset);
-        alchemist.approveMint(address(leverager), 10*wETHDecimalOffset*10);
-        leverager.leverage(10*wETHDecimalOffset, 9*wETHDecimalOffset);
-        //may need to adjust rhs for slippage
-        require(leverager.getDepositedBalance(address(this))==12*wETHDecimalOffset, "deposited funds too low");        
+        setVaultCapacity(wstETHAddress, 12 ether);
+        alchemist.approveMint(address(leverager), 10 ether);
+        leverager.leverage(10 ether, 100, 1000);
+
+        uint depositBalance = leverager.getDepositedBalance(address(this));
+        console.log("final deposit balance");
+        emit DebugValue(depositBalance);
+        int256 debtBalance = leverager.getDebtBalance(address(this));
+        console.log("final debt balance");
+        emit DebugValue(debtBalance);
+        require(depositBalance>=11 ether, "deposited funds too low");        
     }
 
     function testUnhinderedLeverage() public {
         wETH.deposit{value:10 ether}();
         uint wETHinitialDeposit = wETH.balanceOf(address(this));
         wETH.approve(address(leverager), wETHinitialDeposit);
-        setVaultCapacity(30*wETHDecimalOffset);
+        setVaultCapacity(wstETHAddress, 30 ether);
 
         alchemist.approveMint(address(leverager), wETHinitialDeposit*10000000);
-        leverager.leverage(wETHinitialDeposit, wETHinitialDeposit-(wETHinitialDeposit/5));
+        leverager.leverage(wETHinitialDeposit, 100, 1000);
+        
         uint depositBalance = leverager.getDepositedBalance(address(this));
+        console.log("final deposit balance");
+        emit DebugValue(depositBalance);
+        require(depositBalance>=18 ether, "deposited funds too low");
 
-        require(depositBalance>wETHinitialDeposit, "Leverage below expected value");
         int256 debtBalance = leverager.getDebtBalance(address(this));
-        vm.stopPrank();
+        console.log("final debt balance");
+        emit DebugValue(debtBalance);
+        require(depositBalance>=11 ether, "deposited funds too low"); 
     }
     //probably also want to test situations where there is existing balance and debt on the caller
 }
