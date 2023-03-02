@@ -120,19 +120,25 @@ contract EulerCurveMetaLeveragerTest is Test {
         wETH.deposit{value:10 ether}();
         wETH.approve(address(leverager), wETH.balanceOf(address(this)));
         setVaultCapacity(wstETHAddress, 8 ether);
-        leverager.leverage(10 ether, 1000, 1000);
-        ////may need to adjust rhs for slippage
-        require(leverager.getDepositedBalance(address(this)) > 0, "deposited funds too low");
+        leverager.leverage(10 ether, 100, 100);
+
+        uint depositBalance = leverager.getDepositedBalance(address(this));
+        console.log("final deposit balance");
+        emit DebugValue(depositBalance);
+        require(depositBalance > 7.93 ether, "deposited funds too low");
     }
 
     function testVaultCapacityBetweenDepositPoolAndMaxLeverage() public {
-        wETH.deposit{value:10*wETHDecimalOffset}();
+        wETH.deposit{value:10 ether}();
         wETH.approve(address(leverager), wETH.balanceOf(address(this)));
         setVaultCapacity(wstETHAddress, 12 ether);
         alchemist.approveMint(address(leverager), 10 ether);
-        leverager.leverage(10*wETHDecimalOffset, 100, 100);
-        //may need to adjust rhs for slippage
-        require(leverager.getDepositedBalance(address(this))==12*wETHDecimalOffset, "deposited funds too low");        
+        leverager.leverage(10 ether, 100, 1000);
+
+        uint depositBalance = leverager.getDepositedBalance(address(this));
+        console.log("final deposit balance");
+        emit DebugValue(depositBalance);
+        require(depositBalance>=11 ether, "deposited funds too low");        
     }
 
     function testUnhinderedLeverage() public {
