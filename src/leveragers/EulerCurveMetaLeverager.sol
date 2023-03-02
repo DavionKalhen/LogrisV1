@@ -13,7 +13,6 @@ import "../interfaces/uniswap/TransferHelper.sol";
 import "../interfaces/curve/ICurveFactory.sol";
 //import conosle log
 import "forge-std/console.sol";
-import {IStableMetaPool} from "../interfaces/curve/IStableMetaPool.sol";
 
 contract EulerCurveMetaLeverager is ILeverager, Ownable {
     address public yieldToken;
@@ -74,6 +73,11 @@ contract EulerCurveMetaLeverager is ILeverager, Ownable {
         require(false, "Not yet implemented");
     }
 
+    /// @dev Fills up as much vault capacity as possible using leverage.
+    ///
+    /// @param depositAmount Max amount of underlying token to use as the base deposit
+    /// @param minDepositAmount Minimum amount of yield tokens added to vault post wrap
+    ///
     function leverage(uint depositAmount, uint minDepositAmount) external {
         uint depositCapacity = getDepositCapacity();
         require(depositCapacity > 0, "Vault is full");
@@ -127,7 +131,8 @@ contract EulerCurveMetaLeverager is ILeverager, Ownable {
     function _depositUnderlying(uint amount, uint minAmountOut, address sender_) internal {
         IAlchemistV2 alchemist = IAlchemistV2(debtSource);
         IERC20(underlyingToken).approve(address(alchemist), amount);
-        alchemist.depositUnderlying(yieldToken, amount, sender_, minAmountOut);
+        uint depositedShares = alchemist.depositUnderlying(yieldToken, amount, sender_, minAmountOut);
+        emit DepositUnderlying(underlyingToken, amount, alchemist.convertSharesToUnderlyingTokens(yieldToken, depositedShares));
     }
 
     function _swapDebtTokens(uint amount) internal {
@@ -137,7 +142,8 @@ contract EulerCurveMetaLeverager is ILeverager, Ownable {
         uint minAmount = _acceptableTradeOutput(amount);
         require(amountOut>=minAmount, "Swap exceeds max acceptable loss");
         IERC20(debtToken).approve(dex, amount);
-        uint256 amountRecieved = curveFactory.exchange(pool, debtToken, swapTo, amount, minAmount, address(this));
+        uint256 amountReceived = curveFactory.exchange(pool, debtToken, swapTo, amount, minAmount, address(this));
+        emit Swap(debtToken, underlyingToken, amount, amountReceived);
     }
 
     function _acceptableTradeOutput(uint256 amountIn) internal view returns(uint256) {
@@ -150,7 +156,7 @@ contract EulerCurveMetaLeverager is ILeverager, Ownable {
     }
 
     function withdraw(uint shares) external returns(uint amount) {
-        return amount;
+        require(false, "Not yet implemented");
     }
 
     function getDepositCapacity() public view returns(uint) {
@@ -169,9 +175,9 @@ contract EulerCurveMetaLeverager is ILeverager, Ownable {
             //mint as much as possible.
             amount = maxMintable;
         }
-        
-        alchemist.mintFrom(sender_, amount/2, address(this));
         //Mint Debt Tokens
+        alchemist.mintFrom(sender_, amount, address(this));
+        emit Mint(yieldToken, amount);
         return;
     }
 
