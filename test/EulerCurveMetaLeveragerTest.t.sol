@@ -88,10 +88,15 @@ contract EulerCurveMetaLeveragerTest is Test {
         require(result+10**17 > 9*wETHDecimalOffset, "Redeemable Balance lookup failed");
     }
 
-    function setVaultCapacity(uint capacity) public {
+    // denominated in underlying token
+    function setVaultCapacity(uint underlyingCapacity) public {
         IAlchemistV2.YieldTokenParams memory params = alchemist.getYieldTokenParameters(wstETHAddress);
+        uint yieldCapacity = alchemist.convertUnderlyingTokensToYield(wstETHAddress, underlyingCapacity);
         vm.prank(alchemist.admin());
-        alchemist.setMaximumExpectedValue(wstETHAddress, params.expectedValue+capacity);
+        alchemist.setMaximumExpectedValue(wstETHAddress, params.expectedValue + yieldCapacity);
+        params = alchemist.getYieldTokenParameters(wstETHAddress);
+        uint newUnderlyingCapacity = alchemist.convertYieldTokensToUnderlying(wstETHAddress, params.maximumExpectedValue - params.expectedValue);
+        require(newUnderlyingCapacity+0.01 ether > underlyingCapacity, "failed to update vault capacity");
     }
 
     function testVaultCapacityFullLeverage() public {
@@ -103,9 +108,8 @@ contract EulerCurveMetaLeveragerTest is Test {
     function testDepositPoolGreaterThanVaultCapacityLeverage() public {
         wETH.deposit{value:10 ether}();
         wETH.approve(address(leverager), wETH.balanceOf(address(this)));
-        setVaultCapacity(8*wETHDecimalOffset);
-        alchemist.approveMint(address(leverager), 10*wETHDecimalOffset*10);
-        leverager.leverage(10*wETHDecimalOffset, 100, 100);
+        setVaultCapacity(8 ether);
+        leverager.leverage(10 ether, 1000, 1000);
         ////may need to adjust rhs for slippage
         require(leverager.getDepositedBalance(address(this)) > 0, "deposited funds too low");
     }
