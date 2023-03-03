@@ -24,10 +24,9 @@ contract EulerCurveMetaLeveragerTest is Test {
     IAlchemistV2 alchemist;
     Whitelist whitelist;
     IWETH wETH;
-    uint wETHDecimalOffset;
-    uint256 constant minimumCollateralization = 2000000000000000000;
 
     event DebugValue(uint);
+    event DebugValue(int256);
 
     function setUp() public {
         vm.deal(address(this), 200 ether);
@@ -43,7 +42,6 @@ contract EulerCurveMetaLeveragerTest is Test {
 
         //setup underlying approval
         wETH = IWETH(wETHAddress);
-        wETHDecimalOffset=10**wETH.decimals();
         wETH.approve(address(leverager), type(uint256).max);
         wETH.approve(address(alchemistV2Address), type(uint256).max);
     }
@@ -71,13 +69,13 @@ contract EulerCurveMetaLeveragerTest is Test {
         require(10 ether==wETHBalance,"wETH failed to wrap");
 
         //minimumAmountOut is denominated in yield tokens so this is fragile.
-        uint256 minimumAmountOut = 8*wETHDecimalOffset;
+        uint256 minimumAmountOut = 8 ether;
         alchemist.depositUnderlying(wstETHAddress, wETHBalance, address(this), minimumAmountOut);
     }
 
     function borrow1alETH() internal returns(uint) {
         //wETH decimals = alAsset decimals
-        uint alETHAmount = 1*wETHDecimalOffset;
+        uint alETHAmount = 1 ether;
         alchemist.mint(alETHAmount, address(this));
         IERC20 alETH = IERC20(alETHAddress);
         uint alETHMinted = alETH.balanceOf(address(this));
@@ -89,7 +87,7 @@ contract EulerCurveMetaLeveragerTest is Test {
         setVaultCapacity(wstETHAddress, 10.01 ether);
         deposit10Weth();
         uint256 result = leverager.getDepositedBalance(address(this));
-        require(result > 8*wETHDecimalOffset, "Deposit Balance lookup failed");
+        require(result > 8 ether, "Deposit Balance lookup failed");
     }
 
     function testGetDebtBalance() public {
@@ -99,15 +97,29 @@ contract EulerCurveMetaLeveragerTest is Test {
         int256 debtTokens = leverager.getDebtBalance(address(this));
         //for some reason the debt returned by Alchemist is not equal the alETH issued.
         //so I add .01 alETH to what we compare against
-        require(debtTokens+10**17 > int256(alETHAmount), "Debt Balance lookup failed");
+        require(debtTokens+0.01 ether > int256(alETHAmount), "Debt Balance lookup failed");
     }
 
     function testGetRedeemableBalance() public {
         setVaultCapacity(wstETHAddress, 10.01 ether);
         deposit10Weth();
-        uint alETHAmount = borrow1alETH();
+        borrow1alETH();
         uint256 result = leverager.getRedeemableBalance(address(this));
-        require(result+10**17 > 9*wETHDecimalOffset, "Redeemable Balance lookup failed");
+        require(result+0.01 ether > 9 ether, "Redeemable Balance lookup failed");
+    }
+
+    function testGetBorrowCapacity() public {
+        setVaultCapacity(wstETHAddress, 10.01 ether);
+        deposit10Weth();
+        borrow1alETH();
+        uint borrowCapacity = leverager.getBorrowCapacity(address(this));
+        emit DebugValue(borrowCapacity);
+        require(borrowCapacity>3.95 ether, "Borrow Capacity too low");
+        require(borrowCapacity<4.05 ether, "Borrow Capacity too high");
+        alchemist.mint(borrowCapacity, address(this));
+        IERC20 alETH = IERC20(alETHAddress);
+        uint alETHBalance = alETH.balanceOf(address(this));
+        require(alETHBalance > 4.95 ether);
     }
 
     function testVaultCapacityFullLeverage() public {
