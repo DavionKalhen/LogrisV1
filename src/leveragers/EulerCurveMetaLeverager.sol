@@ -38,7 +38,7 @@ contract EulerCurveMetaLeverager is ILeverager, Ownable {
     //return amount denominated in underlying tokens
     function getDepositedBalance(address _depositor) public view returns(uint amount) {
         IAlchemistV2 alchemist = IAlchemistV2(debtSource);
-        //last accrued weight appears to be unrealized credit denominated in debt tokens
+        //last accrued weight appears to be unrealized borrowCapacity denominated in debt tokens
         (uint256 shares,) = alchemist.positions(_depositor, yieldToken);
         amount = alchemist.convertSharesToUnderlyingTokens(yieldToken, shares);
     }
@@ -118,7 +118,7 @@ contract EulerCurveMetaLeverager is ILeverager, Ownable {
             // Vault can't hold all the deposit pool. Fill up the pool.
             depositAmount = depositCapacity;
             //minDepositAmount is denominated in yieldTokens
-            uint256 minDepositAmount = _acceptableTradeOutput(alchemist.convertUnderlyingTokensToYield(yieldToken, depositAmount), underlyingSlippageBasisPoints);
+            uint256 minDepositAmount = _basisPointAdjustment(alchemist.convertUnderlyingTokensToYield(yieldToken, depositAmount), underlyingSlippageBasisPoints);
             console.log("Basic deposit");
             _depositUnderlying(depositAmount, minDepositAmount, msg.sender);
             return;            
@@ -126,7 +126,7 @@ contract EulerCurveMetaLeverager is ILeverager, Ownable {
         else {
             address dTokenAddress = _getDTokenAddress();
             DToken dToken = DToken(dTokenAddress);
-            uint flashLoanAmount = _calculateFlashLoanAmount(depositAmount, debtSlippageBasisPoints, depositCapacity);
+            uint flashLoanAmount = _calculateFlashLoanAmount(depositAmount, underlyingSlippageBasisPoints, debtSlippageBasisPoints, depositCapacity);
             bytes memory data = abi.encode(msg.sender, flashLoanAmount, depositAmount, underlyingSlippageBasisPoints, debtSlippageBasisPoints);
             dToken.flashLoan(flashLoanAmount, data);
             return;
@@ -135,17 +135,16 @@ contract EulerCurveMetaLeverager is ILeverager, Ownable {
 
     function onFlashLoan(bytes memory data) external {
         (address sender, uint flashLoanAmount, uint depositAmount, uint32 underlyingSlippageBasisPoints, uint32 debtSlippageBasisPoints) = abi.decode(data, (address, uint, uint, uint32, uint32));
-
+        console.log("msg.sender:", msg.sender);
+        console.log("sender:", sender);
         IAlchemistV2 alchemist = IAlchemistV2(debtSource);
         uint totalDeposit = flashLoanAmount + depositAmount;
-        uint256 minDepositAmount = _acceptableTradeOutput(alchemist.convertUnderlyingTokensToYield(yieldToken, totalDeposit), underlyingSlippageBasisPoints);
-        console.log("Depositing");
+        uint256 minDepositAmount = _basisPointAdjustment(alchemist.convertUnderlyingTokensToYield(yieldToken, totalDeposit), underlyingSlippageBasisPoints);
         uint depositedShares = _depositUnderlying(totalDeposit, minDepositAmount, sender);
         // we should be able to mint at least half what we deposited
-        // but we can actually mint more if we've accumulated credit since last leverage call
+        // but we can actually mint more if we've accumulated borrowCapacity since last leverage call
         uint redeemable = getDepositedBalance(sender);// - getDebtBalance(address(this));
         console.log("Redeemable:   ", redeemable/2);
-        console.log("Flash amount: ", flashLoanAmount);
         _mintDebtTokens(redeemable, sender);
         console.log("Minted:       ", IERC20(debtToken).balanceOf(address(this)));
         _swapDebtTokens(redeemable/2, debtSlippageBasisPoints);
@@ -156,6 +155,7 @@ contract EulerCurveMetaLeverager is ILeverager, Ownable {
     function _depositUnderlying(uint amount, uint minAmountOut, address _sender) internal returns(uint shares) {
         IAlchemistV2 alchemist = IAlchemistV2(debtSource);
         IERC20(underlyingToken).approve(address(alchemist), amount);
+        console.log("Deposit underlying:", amount);
         uint depositedShares = alchemist.depositUnderlying(yieldToken, amount, _sender, minAmountOut);
         emit DepositUnderlying(underlyingToken, amount, alchemist.convertSharesToUnderlyingTokens(yieldToken, depositedShares));
     }
@@ -169,14 +169,14 @@ contract EulerCurveMetaLeverager is ILeverager, Ownable {
         All we are using to repay the flashloan is the exchanged debt
         We can always flash loan more than we need but the idea is to deposit everything we flash loan
         This means we need to flash loan less than the amount to be deposited (slippage)
-        Further we need to account for existing credit (which lets us flash more)
+        Further we need to account for existing borrowCapacity (which lets us flash more)
         And account for debt peg deviation + debt to underlying slippage
         The flashloanAmount=mintableDebtAfterDeposit*debtToUnderlyingTradeRatio*slippage
         mintableDebtAfterDeposit=mintableDebtBeforeDeposit+changeInMintableDebtFromDeposit
         changeInMintableDebtFromDeposit=(depositAmount+flashloanAmount)*underlyingToYieldTradeRatio*slippage/2
 
         e.g. deposit 10 ETH
-        plan would be to flashloan 10 ETH but the slippage is 1% so we only get 19.8 ETH of credit
+        plan would be to flashloan 10 ETH but the slippage is 1% so we only get 19.8 ETH of borrowCapacity
         Further the alETH peg is at .98 so despite being able to mint 9.9 alETH
         We only get 9.702 wETH out pre-slippage.
         With another 1% trade slippage we're at 9.60498 wETH we can use to repay the flashloan.
@@ -189,9 +189,9 @@ contract EulerCurveMetaLeverager is ILeverager, Ownable {
         deposit amount ETH                                              10
         borrow X ETH
         deposit amount+X ETH                                            10+x
-        receive (amount+X)*underlyingSlippage credit                    .99*(10+x)
-        borrow ((amount+X)*underlyingSlippage)/2+credit alETH           (.99*(10+x)/2)+credit
-        trade borrow alETH for debtToUnderlyingRatio*debtSlippage       .99*.98*((.99*(10+x)/2)+credit)
+        receive (amount+X)*underlyingSlippage borrowCapacity                    .99*(10+x)
+        borrow ((amount+X)*underlyingSlippage)/2+borrowCapacity alETH           (.99*(10+x)/2)+borrowCapacity
+        trade borrow alETH for debtToUnderlyingRatio*debtSlippage       .99*.98*((.99*(10+x)/2)+borrowCapacity)
         repay Y ETH
         amount borrowed = X
         amount repayed = Y
@@ -201,26 +201,39 @@ contract EulerCurveMetaLeverager is ILeverager, Ownable {
         depositTradeLoss = underlyingSlippage
         totalTradeLoss = debtTradeLoss*depositTradeLoss
 
-        x=.99*.98*((.99*(10+x)/2)+credit),                          read as debtTradeLoss * (depositLoss*deposit+credit)
-        x=.99*.98*.99*(10+x)/2+.99*.98*credit                       multiplying the debtTradeLoss loss into deposit and credit
-        x=(.99*.98*.99*10+.99*.98*.99*x)/2+.99*.98*credit           multiplying the depositTradeLoss into the deposit and flash loan values
-        2x=(2*.99*.98*.99*10)+(.99*.98*.99*x)+2*.99*.98*credit      multipying by 2
-        2x-(.99*.98*.99*x)=(2*.99*.98*.99*10)+2*.99*.98*credit      moved x from rhs to lhs
-        (2-(.99*.98*.99))*x=(2*.99*.98*.99*10)+2*.99*.98*credit     factor x out
-        x=((2*.99*.98*.99*10)+2*.99*.98*credit)/(2-(.99*.98*.99))   divide to solve for x
+        x=debtTradeLoss*((underlyingSlippage*(deposit+x)/2)+borrowCapacity),                read as debtTradeLoss * (borrowAmountFromDeposits+existingBorrowCapacity)
+        x=totalTradeLoss*(deposit+x)/2+debtTradeLoss*borrowCapacity                         multiplying the debtTradeLoss loss into deposit and borrowCapacity
+        x=(totalTradeLoss*deposit+totalTradeLoss*x)/2+debtTradeLoss*borrowCapacity          multiplying the depositTradeLoss into the deposit and flash loan values
+        2x=(totalTradeLoss*deposit)+(totalTradeLoss*x)+2*debtTradeLoss*borrowCapacity     multipying by 2
+        2x-(totalTradeLoss*x)=(totalTradeLoss*deposit)+2*debtTradeLoss*borrowCapacity     moved x from rhs to lhs
+        (2-totalTradeLoss)*x=(totalTradeLoss*deposit)+2*debtTradeLoss*borrowCapacity      factor x out
+        x=((totalTradeLoss*deposit)+2*debtTradeLoss*borrowCapacity)/(2-(totalTradeLoss))  divide to solve for x
 
-        flashLoanAmount = 2*(totalTradeLoss*depositAmount+debtTradeLoss*credit)/(2-totalTradeLoss)
+        flashLoanAmount = ((totalTradeLoss*depositAmount)+(collateralizationRatio*debtTradeLoss*borrowCapacity))/(collateralizationRatio-totalTradeLoss)
         minDepositUnderlyingAmount = (depositAmount+flashLoanAmount)*underlyingSlippage
-        mintAmount = (minDepositUnderlyingAmount/2)+credit
+        mintAmount = (minDepositUnderlyingAmount/2)+borrowCapacity
         minDebtTradeAmount = mintAmount*debtToUnderlyingRatio*debtSlippage
-
-        return all these and use them for the remainder of the flow
     */
-    function _calculateFlashLoanAmount(uint depositAmount, uint32 debtSlippageBasisPoints, uint depositCapacity) internal returns (uint flashLoanAmount) {
-        //Calculate flashloan amount. Amount flashed is less a % from total to account for slippage.
-        flashLoanAmount = (depositAmount - (depositAmount/debtSlippageBasisPoints)) + depositAmount < depositCapacity 
-            ? (depositAmount - (depositAmount/10))
-            : depositCapacity - depositAmount;
+    function _calculateFlashLoanAmount(uint depositAmount, uint32 underlyingSlippageBasisPoints, uint32 debtSlippageBasisPoints, uint depositCapacity) internal returns (uint flashLoanAmount) {
+        IAlchemistV2 alchemist = IAlchemistV2(debtSource);
+        //normalizeDebt is returning 1:1 despite the alETH peg being .97
+        //We need to get the actual price per token from our curve factory.
+        uint debtTokenPPS = 1 ether;
+        uint debtTradeLoss =  _basisPointAdjustment(1 ether * debtTokenPPS / 1e18, debtSlippageBasisPoints);
+        uint totalTradeLoss = _basisPointAdjustment(debtTradeLoss, underlyingSlippageBasisPoints);
+        uint borrowCapacity = getBorrowCapacity(msg.sender);
+        uint256 minimumCollateralization = alchemist.minimumCollateralization();
+        console.log("debtTokenPPS: ", debtTokenPPS);
+        console.log("debt trade loss: ", debtTradeLoss);
+        console.log("total trade loss: ", totalTradeLoss);
+        console.log("borrowCapacity:", borrowCapacity);
+        console.log("minimumCollateralization:", minimumCollateralization);
+
+        flashLoanAmount = ((totalTradeLoss*depositAmount)+(minimumCollateralization*debtTradeLoss*borrowCapacity/1e18))/(minimumCollateralization-totalTradeLoss);
+        console.log("newflashLoanAmount: ", flashLoanAmount);
+        if(depositAmount+flashLoanAmount>depositCapacity) {
+            flashLoanAmount = depositCapacity-depositAmount;
+        }
     }
 
     //amount denominated in debt tokens
@@ -235,14 +248,14 @@ contract EulerCurveMetaLeverager is ILeverager, Ownable {
         //then we adjust for slippage ourselves.
         //normalizeDebtTokensToUnderlying doesn't actually look at Curve
         //I don't know where _underlyingTokens[underlyingToken].conversionFactor comes from.
-        uint minAmount = _acceptableTradeOutput(alchemist.normalizeDebtTokensToUnderlying(underlyingToken, amount), debtSlippageBasisPoints);
+        uint minAmount = _basisPointAdjustment(alchemist.normalizeDebtTokensToUnderlying(underlyingToken, amount), debtSlippageBasisPoints);
         require(amountOut>=minAmount, "Swap exceeds max acceptable loss");
         IERC20(debtToken).approve(dex, amount);
         uint256 amountReceived = curveFactory.exchange(pool, debtToken, swapTo, amount, minAmount, address(this));
         emit Swap(debtToken, underlyingToken, amount, amountReceived);
     }
 
-    function _acceptableTradeOutput(uint256 amountIn, uint32 slippageBasisPoints) internal view returns(uint256) {
+    function _basisPointAdjustment(uint256 amountIn, uint32 slippageBasisPoints) internal pure returns(uint256) {
         return amountIn * (10000-slippageBasisPoints) / 10000;
     }
 
