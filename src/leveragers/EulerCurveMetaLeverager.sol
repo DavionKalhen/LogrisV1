@@ -145,6 +145,7 @@ contract EulerCurveMetaLeverager is ILeverager, Ownable {
         //if we also refactor to a delegate call design
         console.log("msg.sender:", msg.sender);
         console.log("sender:", sender);
+        require(msg.sender==flashLoan, "callback caller must be flashloan source");
         uint totalDeposit = flashLoanAmount + depositAmount;
         _depositUnderlying(totalDeposit, underlyingSlippageBasisPoints, sender);
         _mintDebtTokens(mintAmount, sender);
