@@ -54,9 +54,10 @@ contract EulerCurveMetaLeveragerTest is Test {
         vm.prank(alchemist.admin());
         alchemist.setMaximumExpectedValue(yieldToken, params.expectedValue + underlyingCapacity);
         params = alchemist.getYieldTokenParameters(yieldToken);
-        uint newUnderlyingCapacity = params.maximumExpectedValue - params.expectedValue;
-        console.log("new vault ceiling", newUnderlyingCapacity);
+        console.log("new vault ceiling", params.maximumExpectedValue);
         emit DebugValue(params.maximumExpectedValue);
+
+        uint newUnderlyingCapacity = params.maximumExpectedValue - params.expectedValue;
         console.log("vault capacity:", newUnderlyingCapacity);
         emit DebugValue(newUnderlyingCapacity);
         require(newUnderlyingCapacity+0.01 ether > underlyingCapacity, "failed to update vault capacity");
@@ -165,14 +166,45 @@ contract EulerCurveMetaLeveragerTest is Test {
         leverager.leverage(wETHinitialDeposit, 100, 300);
         
         uint depositBalance = leverager.getDepositedBalance(address(this));
-        console.log("final deposit balance");
+        console.log("final deposit balance: ", depositBalance);
         emit DebugValue(depositBalance);
         require(depositBalance>=18 ether, "deposited funds too low");
 
         int256 debtBalance = leverager.getDebtBalance(address(this));
-        console.log("final debt balance");
+        console.log("final debt balance: ", uint(debtBalance));
         emit DebugValue(debtBalance);
         require(depositBalance>=11 ether, "deposited funds too low"); 
     }
-    //probably also want to test situations where there is existing balance and debt on the caller
+
+    //test is failing
+    function testExistingBalancesLeverage() public {
+        deposit10Weth();
+        borrow1alETH();
+
+        wETH.deposit{value:10 ether}();
+        uint wETHinitialDeposit = wETH.balanceOf(address(this));
+        wETH.approve(address(leverager), wETHinitialDeposit);
+        setVaultCapacity(wstETHAddress, 40 ether);
+
+        alchemist.approveMint(address(leverager), wETHinitialDeposit*10000000);
+        uint preLeverageDepositBalance = leverager.getDepositedBalance(address(this));
+        int256 preLeverageDebtBalance = leverager.getDebtBalance(address(this));
+        leverager.leverage(wETHinitialDeposit, 100, 300);
+        
+        uint postLeverageDepositBalance = leverager.getDepositedBalance(address(this));
+        console.log("final deposit balance: ", postLeverageDepositBalance);
+        emit DebugValue(postLeverageDepositBalance);
+
+        uint depositDelta = postLeverageDepositBalance-preLeverageDepositBalance;
+        console.log("deposit delta:", depositDelta);
+        emit DebugValue(depositDelta);
+
+        int256 postLeverageDebtBalance = leverager.getDebtBalance(address(this));
+        console.log("final debt balance: ", uint(postLeverageDebtBalance));
+        emit DebugValue(postLeverageDebtBalance);
+
+        uint debtDelta = uint(postLeverageDebtBalance - preLeverageDebtBalance);
+        console.log("debt delta: ", debtDelta);
+        emit DebugValue(debtDelta);
+    }
 }

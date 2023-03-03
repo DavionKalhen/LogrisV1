@@ -102,7 +102,7 @@ contract EulerCurveMetaLeverager is ILeverager, Ownable {
     /// @dev Fills up as much vault capacity as possible using leverage.
     ///
     /// @param depositAmount Max amount of underlying token to use as the base deposit
-    /// @param underlyingSlippageBasisPoints Slippage tolerance when trading underlying to yield token. Does not account for yield peg deviations.
+    /// @param underlyingSlippageBasisPoints Slippage tolerance when trading underlying to yield token. Must include basis points for peg deviations.
     /// @param debtSlippageBasisPoints Slippage tolerance when trading debt to underlying token. Does not account for debt peg deviations.
     ///
     function leverage(uint depositAmount, uint32 underlyingSlippageBasisPoints, uint32 debtSlippageBasisPoints) external {
@@ -117,45 +117,44 @@ contract EulerCurveMetaLeverager is ILeverager, Ownable {
             console.log("vault capacity smaller than deposit");
             // Vault can't hold all the deposit pool. Fill up the pool.
             depositAmount = depositCapacity;
-            //minDepositAmount is denominated in yieldTokens
-            uint256 minDepositAmount = _basisPointAdjustment(alchemist.convertUnderlyingTokensToYield(yieldToken, depositAmount), underlyingSlippageBasisPoints);
             console.log("Basic deposit");
-            _depositUnderlying(depositAmount, minDepositAmount, msg.sender);
-            return;            
+            _depositUnderlying(depositAmount, underlyingSlippageBasisPoints, msg.sender);
         }
         else {
             address dTokenAddress = _getDTokenAddress();
             DToken dToken = DToken(dTokenAddress);
-            uint flashLoanAmount = _calculateFlashLoanAmount(depositAmount, underlyingSlippageBasisPoints, debtSlippageBasisPoints, depositCapacity);
-            bytes memory data = abi.encode(msg.sender, flashLoanAmount, depositAmount, underlyingSlippageBasisPoints, debtSlippageBasisPoints);
+            (uint flashLoanAmount, uint mintAmount) = _calculateFlashLoanAmount(depositAmount, underlyingSlippageBasisPoints, debtSlippageBasisPoints, depositCapacity);
+            //approve mint needs to be called before msg.sender changes
+            //requires change to delegate call first. this is prep work.
+            //alchemist.approveMint(address, amount);
+            bytes memory data = abi.encode(msg.sender, flashLoanAmount, depositAmount, mintAmount, underlyingSlippageBasisPoints, debtSlippageBasisPoints);
             dToken.flashLoan(flashLoanAmount, data);
-            return;
         }
+        //the dust should get transmitted back to msg.sender but it might not be worth the gas...
+        //better solved with a delegate call pattern but that would stop the leverager from
+        //working with EOA accounts
     }
 
     function onFlashLoan(bytes memory data) external {
-        (address sender, uint flashLoanAmount, uint depositAmount, uint32 underlyingSlippageBasisPoints, uint32 debtSlippageBasisPoints) = abi.decode(data, (address, uint, uint, uint32, uint32));
+        (address sender, uint flashLoanAmount, uint depositAmount, uint mintAmount, uint32 underlyingSlippageBasisPoints, uint32 debtSlippageBasisPoints) = abi.decode(data, (address, uint, uint, uint, uint32, uint32));
+        //We'd really like to find a way to flashloan while retaining msg.sender.
+        //so that we don't need a mint allowance on alchemix to ourselves
+        //if we also refactor to a delegate call design
         console.log("msg.sender:", msg.sender);
         console.log("sender:", sender);
         IAlchemistV2 alchemist = IAlchemistV2(debtSource);
         uint totalDeposit = flashLoanAmount + depositAmount;
-        uint256 minDepositAmount = _basisPointAdjustment(alchemist.convertUnderlyingTokensToYield(yieldToken, totalDeposit), underlyingSlippageBasisPoints);
-        uint depositedShares = _depositUnderlying(totalDeposit, minDepositAmount, sender);
-        // we should be able to mint at least half what we deposited
-        // but we can actually mint more if we've accumulated borrowCapacity since last leverage call
-        uint redeemable = getDepositedBalance(sender);// - getDebtBalance(address(this));
-        console.log("Redeemable:   ", redeemable/2);
-        _mintDebtTokens(redeemable, sender);
-        console.log("Minted:       ", IERC20(debtToken).balanceOf(address(this)));
-        _swapDebtTokens(redeemable/2, debtSlippageBasisPoints);
-        console.log("Swapped");
+        _depositUnderlying(totalDeposit, underlyingSlippageBasisPoints, sender);
+        _mintDebtTokens(mintAmount, sender);
+        _swapDebtTokens(mintAmount, debtSlippageBasisPoints);
         _repayFlashLoan(flashLoanAmount);
     }
 
-    function _depositUnderlying(uint amount, uint minAmountOut, address _sender) internal returns(uint shares) {
+    function _depositUnderlying(uint amount, uint32 underlyingSlippageBasisPoints, address _sender) internal returns(uint shares) {
         IAlchemistV2 alchemist = IAlchemistV2(debtSource);
+        uint minAmountOut = _basisPointAdjustment(alchemist.convertUnderlyingTokensToYield(yieldToken, amount), underlyingSlippageBasisPoints);
         IERC20(underlyingToken).approve(address(alchemist), amount);
-        console.log("Deposit underlying:", amount);
+        console.log("Deposit underlying: ", amount);
         uint depositedShares = alchemist.depositUnderlying(yieldToken, amount, _sender, minAmountOut);
         emit DepositUnderlying(underlyingToken, amount, alchemist.convertSharesToUnderlyingTokens(yieldToken, depositedShares));
     }
@@ -214,26 +213,32 @@ contract EulerCurveMetaLeverager is ILeverager, Ownable {
         mintAmount = (minDepositUnderlyingAmount/2)+borrowCapacity
         minDebtTradeAmount = mintAmount*debtToUnderlyingRatio*debtSlippage
     */
-    function _calculateFlashLoanAmount(uint depositAmount, uint32 underlyingSlippageBasisPoints, uint32 debtSlippageBasisPoints, uint depositCapacity) internal returns (uint flashLoanAmount) {
+    function _calculateFlashLoanAmount(uint depositAmount, uint32 underlyingSlippageBasisPoints, uint32 debtSlippageBasisPoints, uint depositCapacity) internal returns (uint flashLoanAmount, uint mintAmount) {
         IAlchemistV2 alchemist = IAlchemistV2(debtSource);
         //normalizeDebt is returning 1:1 despite the alETH peg being .97
-        //We need to get the actual price per token from our curve factory.
-        uint debtTokenPPS = 1 ether;
-        uint debtTradeLoss =  _basisPointAdjustment(1 ether * debtTokenPPS / 1e18, debtSlippageBasisPoints);
+        //We would need to get the actual price per token from our curve factory.
+        //I think we can just bundle the peg deviation with the slippage into debtSlippageBasisPoints and save the gas.
+        uint debtTradeLoss =  _basisPointAdjustment(1 ether, debtSlippageBasisPoints);
         uint totalTradeLoss = _basisPointAdjustment(debtTradeLoss, underlyingSlippageBasisPoints);
         uint borrowCapacity = getBorrowCapacity(msg.sender);
         uint256 minimumCollateralization = alchemist.minimumCollateralization();
-        console.log("debtTokenPPS: ", debtTokenPPS);
         console.log("debt trade loss: ", debtTradeLoss);
         console.log("total trade loss: ", totalTradeLoss);
         console.log("borrowCapacity:", borrowCapacity);
         console.log("minimumCollateralization:", minimumCollateralization);
 
         flashLoanAmount = ((totalTradeLoss*depositAmount)+(minimumCollateralization*debtTradeLoss*borrowCapacity/1e18))/(minimumCollateralization-totalTradeLoss);
-        console.log("newflashLoanAmount: ", flashLoanAmount);
+        console.log("flashLoanAmount: ", flashLoanAmount);
         if(depositAmount+flashLoanAmount>depositCapacity) {
             flashLoanAmount = depositCapacity-depositAmount;
         }
+
+        mintAmount = _calculateMintAmount(depositAmount+flashLoanAmount, underlyingSlippageBasisPoints, borrowCapacity, minimumCollateralization);
+        console.log("mint amount:", mintAmount);
+    }
+
+    function _calculateMintAmount(uint totalDeposit, uint32 underlyingSlippageBasisPoints, uint borrowCapacity, uint minimumCollateralization) internal pure returns(uint mintAmount) {
+        mintAmount = _basisPointAdjustment(totalDeposit, underlyingSlippageBasisPoints) * FIXED_POINT_SCALAR / minimumCollateralization;
     }
 
     //amount denominated in debt tokens
@@ -252,6 +257,7 @@ contract EulerCurveMetaLeverager is ILeverager, Ownable {
         require(amountOut>=minAmount, "Swap exceeds max acceptable loss");
         IERC20(debtToken).approve(dex, amount);
         uint256 amountReceived = curveFactory.exchange(pool, debtToken, swapTo, amount, minAmount, address(this));
+        console.log("Swapped: ", amount, amountReceived);
         emit Swap(debtToken, underlyingToken, amount, amountReceived);
     }
 
@@ -268,16 +274,18 @@ contract EulerCurveMetaLeverager is ILeverager, Ownable {
         require(false, "Not yet implemented");
     }
 
-    function _mintDebtTokens(uint amount, address sender_) internal {
+    function _mintDebtTokens(uint mintAmount, address _sender) internal {
         IAlchemistV2 alchemist = IAlchemistV2(debtSource);
-        (uint maxMintable, ,) = alchemist.getMintLimitInfo();
-        if (amount > maxMintable) {
-            //mint as much as possible.
-            amount = maxMintable;
-        }
+        //this needs to be accountd for in calculate flash loan
+        // (uint maxMintable, ,) = alchemist.getMintLimitInfo();
+        // if (amount > maxMintable) {
+        //     //mint as much as possible.
+        //     amount = maxMintable;
+        // }
         //Mint Debt Tokens
-        alchemist.mintFrom(sender_, amount/2, address(this));
-        emit Mint(yieldToken, amount);
+        alchemist.mintFrom(_sender, mintAmount, address(this));
+        console.log("Minted: ", mintAmount);
+        emit Mint(yieldToken, mintAmount);
         return;
     }
 
