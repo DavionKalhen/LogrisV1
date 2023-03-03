@@ -280,7 +280,9 @@ contract EulerCurveMetaLeverager is ILeverager, Ownable {
     function withdrawUnderlying(uint amount, uint32 underlyingSlippageBasisPoints) external returns(uint withdrawnAmount) {
         require(amount>0);
         uint withdrawCapacity = getWithdrawCapacity(msg.sender);
+        console.log("withdraw capacity: ", withdrawCapacity);
         if(amount<withdrawCapacity) {
+            console.log("simple withdraw");
             withdrawnAmount = _withdrawUnderlying(amount, underlyingSlippageBasisPoints, msg.sender);
         } else {
             require(false, "Not yet implemented");
@@ -289,8 +291,9 @@ contract EulerCurveMetaLeverager is ILeverager, Ownable {
 
     function _withdrawUnderlying(uint amount, uint32 underlyingSlippageBasisPoints, address recipient) internal returns(uint withdrawnAmount) {
         IAlchemistV2 alchemist = IAlchemistV2(debtSource);
-        uint shares = alchemist.convertUnderlyingTokensToShares(yieldToken, _basisPointAdjustmentUp(amount, underlyingSlippageBasisPoints));
-        withdrawnAmount = alchemist.withdrawUnderlying(yieldToken, shares, recipient, amount);
+        uint adjustedUnderlying = _basisPointAdjustmentUp(amount, underlyingSlippageBasisPoints);
+        uint shares = alchemist.convertUnderlyingTokensToShares(yieldToken, adjustedUnderlying);
+        withdrawnAmount = alchemist.withdrawUnderlyingFrom(recipient, yieldToken, shares, recipient, amount);
     }
 
     function _mintDebtTokens(uint mintAmount, address _sender) internal {
