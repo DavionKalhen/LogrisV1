@@ -54,9 +54,10 @@ contract EulerCurveMetaLeveragerTest is Test {
         vm.prank(alchemist.admin());
         alchemist.setMaximumExpectedValue(yieldToken, params.expectedValue + underlyingCapacity);
         params = alchemist.getYieldTokenParameters(yieldToken);
-        uint newUnderlyingCapacity = params.maximumExpectedValue - params.expectedValue;
-        console.log("new vault ceiling", newUnderlyingCapacity);
+        console.log("new vault ceiling", params.maximumExpectedValue);
         emit DebugValue(params.maximumExpectedValue);
+
+        uint newUnderlyingCapacity = params.maximumExpectedValue - params.expectedValue;
         console.log("vault capacity:", newUnderlyingCapacity);
         emit DebugValue(newUnderlyingCapacity);
         require(newUnderlyingCapacity+0.01 ether > underlyingCapacity, "failed to update vault capacity");
