@@ -73,9 +73,8 @@ contract EulerCurveMetaLeveragerTest is Test {
         alchemist.depositUnderlying(wstETHAddress, wETHBalance, address(this), minimumAmountOut);
     }
 
-    function borrow1alETH() internal returns(uint) {
+    function borrowAlETH(uint alETHAmount) internal returns(uint) {
         //wETH decimals = alAsset decimals
-        uint alETHAmount = 1 ether;
         alchemist.mint(alETHAmount, address(this));
         IERC20 alETH = IERC20(alETHAddress);
         uint alETHMinted = alETH.balanceOf(address(this));
@@ -93,7 +92,7 @@ contract EulerCurveMetaLeveragerTest is Test {
     function testGetDebtBalance() public {
         setVaultCapacity(wstETHAddress, 10.01 ether);
         deposit10Weth();
-        uint alETHAmount = borrow1alETH();
+        uint alETHAmount = borrowAlETH(1 ether);
         int256 debtTokens = leverager.getDebtBalance(address(this));
         //for some reason the debt returned by Alchemist is not equal the alETH issued.
         //so I add .01 alETH to what we compare against
@@ -103,7 +102,7 @@ contract EulerCurveMetaLeveragerTest is Test {
     function testGetRedeemableBalance() public {
         setVaultCapacity(wstETHAddress, 10.01 ether);
         deposit10Weth();
-        borrow1alETH();
+        borrowAlETH(1 ether);
         uint256 result = leverager.getRedeemableBalance(address(this));
         require(result+0.01 ether > 9 ether, "Redeemable Balance lookup failed");
     }
@@ -111,7 +110,7 @@ contract EulerCurveMetaLeveragerTest is Test {
     function testGetBorrowCapacity() public {
         setVaultCapacity(wstETHAddress, 10.01 ether);
         deposit10Weth();
-        borrow1alETH();
+        borrowAlETH(1 ether);
         uint borrowCapacity = leverager.getBorrowCapacity(address(this));
         emit DebugValue(borrowCapacity);
         require(borrowCapacity>3.95 ether, "Borrow Capacity too low");
@@ -120,6 +119,23 @@ contract EulerCurveMetaLeveragerTest is Test {
         IERC20 alETH = IERC20(alETHAddress);
         uint alETHBalance = alETH.balanceOf(address(this));
         require(alETHBalance > 4.95 ether);
+    }
+
+    function testGetWithdrawCapacity() public {
+        setVaultCapacity(wstETHAddress, 10.01 ether);
+        deposit10Weth();
+        uint withdrawCapacity = leverager.getWithdrawCapacity(address(this));
+        console.log("withdraw capacity before borrow: ", withdrawCapacity);
+        emit DebugValue(withdrawCapacity);
+        require(withdrawCapacity>=9.95 ether, "Withdraw capacity too low");
+        require(withdrawCapacity<=10 ether, "Withdraw capacity too high");
+        //then borrow eth and recalculate
+        borrowAlETH(1 ether);
+        withdrawCapacity = leverager.getWithdrawCapacity(address(this));
+        console.log("withdraw capacity after borrow: ", withdrawCapacity);
+        emit DebugValue(withdrawCapacity);
+        require(withdrawCapacity>=7.95 ether, "Withdraw capacity too low");
+        require(withdrawCapacity<=8 ether, "Withdraw capacity too high");
     }
 
     function testVaultCapacityFullLeverage() public {
@@ -178,13 +194,13 @@ contract EulerCurveMetaLeveragerTest is Test {
 
     //test is failing
     function testExistingBalancesLeverage() public {
+        setVaultCapacity(wstETHAddress, 40 ether);
         deposit10Weth();
-        borrow1alETH();
+        borrowAlETH(1 ether);
 
         wETH.deposit{value:10 ether}();
         uint wETHinitialDeposit = wETH.balanceOf(address(this));
         wETH.approve(address(leverager), wETHinitialDeposit);
-        setVaultCapacity(wstETHAddress, 40 ether);
 
         alchemist.approveMint(address(leverager), wETHinitialDeposit*10000000);
         uint preLeverageDepositBalance = leverager.getDepositedBalance(address(this));
@@ -206,5 +222,23 @@ contract EulerCurveMetaLeveragerTest is Test {
         uint debtDelta = uint(postLeverageDebtBalance - preLeverageDebtBalance);
         console.log("debt delta: ", debtDelta);
         emit DebugValue(debtDelta);
+    }
+
+    function testWithdrawWithinCapacity() public {
+        setVaultCapacity(wstETHAddress, 20 ether);
+        deposit10Weth();
+        borrowAlETH(1 ether);
+        leverager.withdrawUnderlying(2 ether, 100);
+        uint withdrawnFunds = wETH.balanceOf(address(this));
+        require(withdrawnFunds>=2 ether,"Insufficient withdraw");
+    }
+
+    function testWithdrawRequiringLiquidation() public {
+        setVaultCapacity(wstETHAddress, 20 ether);
+        deposit10Weth();
+        borrowAlETH(4 ether);
+        leverager.withdrawUnderlying(6 ether, 300);
+        uint withdrawnFunds = wETH.balanceOf(address(this));
+        require(withdrawnFunds>=6 ether,"Insufficient withdraw");
     }
 }

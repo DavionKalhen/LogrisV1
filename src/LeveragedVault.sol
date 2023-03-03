@@ -67,7 +67,7 @@ contract LeveragedVault is ERC4626, Ownable, ILeveragedVault {
         uint underlyingWithdrawAmount = convertSharesToUnderlyingTokens(shares);
         uint depositPoolBalance = underlyingToken.balanceOf(address(this));
         if(depositPoolBalance < underlyingWithdrawAmount) {
-            leverager.withdrawUnderlying(underlyingWithdrawAmount-depositPoolBalance);
+            leverager.withdrawUnderlying(underlyingWithdrawAmount-depositPoolBalance, underlyingSlippageBasisPoints);
         }
         amount = super.withdraw(shares, msg.sender, address(this));
         emit WithdrawUnderlying(msg.sender, address(underlyingToken), shares);
