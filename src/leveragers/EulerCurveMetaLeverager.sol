@@ -23,6 +23,8 @@ contract EulerCurveMetaLeverager is ILeverager, Ownable {
     address public dex;
     address constant curveEth = 0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE;
     address constant weth = 0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2;
+    
+    uint256 public constant FIXED_POINT_SCALAR = 1e18;
 
     constructor(address _yieldToken, address _underlyingToken, address _debtToken, address _flashLoan, address _debtSource, address _dex) {
         yieldToken = _yieldToken;
@@ -50,17 +52,14 @@ contract EulerCurveMetaLeverager is ILeverager, Ownable {
     //return amount denominated in underlying tokens
     function getRedeemableBalance(address _depositor) public view returns(uint amount) {
         IAlchemistV2 alchemist = IAlchemistV2(debtSource);
-        (uint256 shares,) = alchemist.positions(_depositor, yieldToken);
-        uint256 depositedUnderlyingTokens = alchemist.convertSharesToUnderlyingTokens(yieldToken, shares);
-
-        (int256 debtTokens,) = alchemist.accounts(_depositor);
-        uint256 debtYieldTokens;
-        if(debtTokens>0) {
-            uint256 underlyingDebt = alchemist.normalizeDebtTokensToUnderlying(underlyingToken, uint(debtTokens));
-            return depositedUnderlyingTokens - underlyingDebt;
+        uint depositBalance = getDepositedBalance(_depositor);     
+        int256 debtBalance = getDebtBalance(_depositor);
+        if(debtBalance>=0) {
+            uint256 underlyingDebt = alchemist.normalizeDebtTokensToUnderlying(underlyingToken, uint(debtBalance));
+            return depositBalance - underlyingDebt;
         } else {
-            uint256 underlyingCredit = alchemist.normalizeDebtTokensToUnderlying(underlyingToken, uint(-1*debtTokens));
-            return depositedUnderlyingTokens + underlyingCredit;
+            uint256 underlyingCredit = alchemist.normalizeDebtTokensToUnderlying(underlyingToken, uint(-1*debtBalance));
+            return depositBalance + underlyingCredit;
         }
     }
 
@@ -75,8 +74,20 @@ contract EulerCurveMetaLeverager is ILeverager, Ownable {
     }
 
     //return amount denominated in debt tokens
-    function getMintCapacity(address _depositor) public view returns(uint amount) {
-        require(false, "Not yet implemented");
+    function getBorrowCapacity(address _depositor) public view returns(uint amount) {
+        IAlchemistV2 alchemist = IAlchemistV2(debtSource);
+        uint256 minimumCollateralization = alchemist.minimumCollateralization();//includes 1e18
+        uint depositBalance = getDepositedBalance(_depositor);     
+        int256 debtBalance = getDebtBalance(_depositor);
+        uint debtAdjustedBalance=0;
+        if(debtBalance>=0) {
+            uint256 underlyingDebt = alchemist.normalizeDebtTokensToUnderlying(underlyingToken, uint(debtBalance));
+            debtAdjustedBalance = depositBalance - (underlyingDebt * minimumCollateralization / FIXED_POINT_SCALAR);
+        } else {
+            uint256 underlyingCredit = alchemist.normalizeDebtTokensToUnderlying(underlyingToken, uint(-1*debtBalance));
+            debtAdjustedBalance = depositBalance + (underlyingCredit * minimumCollateralization / FIXED_POINT_SCALAR);
+        }
+        amount = debtAdjustedBalance * FIXED_POINT_SCALAR / minimumCollateralization;
     }
 
     function withdrawUnderlying(uint amount) external {
