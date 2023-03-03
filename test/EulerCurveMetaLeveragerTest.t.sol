@@ -49,16 +49,15 @@ contract EulerCurveMetaLeveragerTest is Test {
     // denominated in underlying token
     function setVaultCapacity(address yieldToken, uint underlyingCapacity) public {
         IAlchemistV2.YieldTokenParams memory params = alchemist.getYieldTokenParameters(yieldToken);
-        console.log("old ceiling");
+        console.log("old vault ceiling: ", params.maximumExpectedValue);
         emit DebugValue(params.maximumExpectedValue);
         vm.prank(alchemist.admin());
         alchemist.setMaximumExpectedValue(yieldToken, params.expectedValue + underlyingCapacity);
         params = alchemist.getYieldTokenParameters(yieldToken);
         uint newUnderlyingCapacity = params.maximumExpectedValue - params.expectedValue;
-        console.log("new ceiling");
+        console.log("new vault ceiling", newUnderlyingCapacity);
         emit DebugValue(params.maximumExpectedValue);
-        console.log("capacity");
-        emit DebugValue(params.maximumExpectedValue-params.expectedValue);
+        console.log("vault capacity:", newUnderlyingCapacity);
         emit DebugValue(newUnderlyingCapacity);
         require(newUnderlyingCapacity+0.01 ether > underlyingCapacity, "failed to update vault capacity");
     }
@@ -163,7 +162,7 @@ contract EulerCurveMetaLeveragerTest is Test {
         setVaultCapacity(wstETHAddress, 30 ether);
 
         alchemist.approveMint(address(leverager), wETHinitialDeposit*10000000);
-        leverager.leverage(wETHinitialDeposit, 100, 1000);
+        leverager.leverage(wETHinitialDeposit, 100, 300);
         
         uint depositBalance = leverager.getDepositedBalance(address(this));
         console.log("final deposit balance");
