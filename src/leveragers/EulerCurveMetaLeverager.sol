@@ -79,7 +79,7 @@ contract EulerCurveMetaLeverager is ILeverager, Ownable {
         uint256 minimumCollateralization = alchemist.minimumCollateralization();//includes 1e18
         uint depositBalance = getDepositedBalance(_depositor);     
         int256 debtBalance = getDebtBalance(_depositor);
-                uint debtAdjustedBalance=0;
+        uint debtAdjustedBalance=0;
         if(debtBalance>=0) {
             uint256 underlyingDebt = alchemist.normalizeDebtTokensToUnderlying(underlyingToken, uint(debtBalance));
             debtAdjustedBalance = depositBalance - (underlyingDebt * minimumCollateralization / FIXED_POINT_SCALAR);
@@ -125,6 +125,7 @@ contract EulerCurveMetaLeverager is ILeverager, Ownable {
             DToken dToken = DToken(dTokenAddress);
             (uint flashLoanAmount, uint mintAmount) = _calculateFlashLoanAmount(depositAmount, underlyingSlippageBasisPoints, debtSlippageBasisPoints, depositCapacity);
             //approve mint needs to be called before msg.sender changes
+            //requires change to delegate call first. this is prep work.
             //alchemist.approveMint(address, amount);
             bytes memory data = abi.encode(msg.sender, flashLoanAmount, depositAmount, mintAmount, underlyingSlippageBasisPoints, debtSlippageBasisPoints);
             dToken.flashLoan(flashLoanAmount, data);
