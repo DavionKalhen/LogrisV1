@@ -63,5 +63,13 @@ contract AlchemistV2Test is Test {
         wETH.approve(alchemistV2Address, wETH.balanceOf(address(this)));
         setVaultCapacity(wstETHAddress, 10.01 ether);
         uint depositedShares = alchemist.depositUnderlying(wstETHAddress, 10 ether, address(this), 1 ether);
+        require(depositedShares > 0, "deposit fail");
+    }
+
+    function testWithdrawUnderlying() public {
+        testDepositUnderlying();
+        (uint256 shares,) = alchemist.positions(address(this), wstETHAddress);
+        alchemist.withdrawUnderlying(wstETHAddress, shares, address(this), 9 ether);
+        require(wETH.balanceOf(address(this)) > 9, "deposit fail");
     }
 }
