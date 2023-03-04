@@ -10,7 +10,9 @@ interface ILeverager is IFlashLoan {
     function getDepositedBalance(address depositor) external view returns(uint amount);
     function getDebtBalance(address depositor) external view returns(int256 amount);
     function getRedeemableBalance(address depositor) external view returns(uint amount);
+    function getBorrowCapacity(address depositor) external view returns(uint amount);
+    function getWithdrawCapacity(address _depositor) external view returns(uint amount);
 
-    function withdrawUnderlying(uint amount) external;
+    function withdrawUnderlying(uint amount, uint32 underlyingSlippageBasisPoints) external returns(uint withdrawnAmount);
     function leverage(uint depositAmount, uint32 underlyingSlippageBasisPoints, uint32 debtSlippageBasisPoints) external;
 }
