@@ -12,7 +12,7 @@ import "lib/openzeppelin-contracts/contracts/token/ERC20/extensions/IERC20Metada
  *
  * _Available since v4.7._
  */
-interface IERC4626Logris is IERC20, IERC20Metadata {
+interface IERC4626 is IERC20, IERC20Metadata {
     event Deposit(address indexed sender, address indexed owner, uint256 assets, uint256 shares);
 
     event Withdraw(

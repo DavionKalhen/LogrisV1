@@ -1,19 +1,17 @@
-import "./IERC4626Logris.sol";
+import "./IERC4626.sol";
 
 pragma solidity ^0.8.0;
 
-interface ILeveragedVault is IERC4626Logris {
+interface ILeveragedVault is IERC4626 {
     event DepositUnderlying(address indexed sender, address indexed underlyingToken, uint256 amount);
     event WithdrawUnderlying(address indexed sender, address indexed underlyingToken, uint256 shares);
     event Leverage(address indexed yieldToken, uint256 depositAmount, int256 debtAmount);
-
-    error SlippageExceeded();
-
-    /* we'll support depositUnderlying as a stretch goal
-    either add a token address parameter to the getBalance calls or add new view functions for getUnderlying
+    
+    /* we'll support depositYield as a stretch goal
+    either add a token address parameter to the getBalance calls or add new view functions for getYield
     function getVaultAssets() external view returns(address[] memory);
-    event DepositUnderlying(address indexed sender, address indexed underlyingToken, uint256 amount);
-    function depositUnderlying(uint amount) external returns(uint shares);
+    event DepositYield(address indexed sender, address indexed yieldToken, uint256 amount);
+    function depositYield(uint amount) external returns(uint shares);
     */
     function getYieldToken() external view returns(address yieldToken);
     function getUnderlyingToken() external view returns(address underlyingToken);

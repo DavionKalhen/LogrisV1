@@ -5,7 +5,7 @@ pragma solidity ^0.8.0;
 
 import "lib/openzeppelin-contracts/contracts/token/ERC20/ERC20.sol";
 import "lib/openzeppelin-contracts/contracts/token/ERC20/utils/SafeERC20.sol";
-import "./interfaces/IERC4626Logris.sol";
+import "./interfaces/IERC4626.sol";
 import "lib/openzeppelin-contracts/contracts/utils/math/Math.sol";
 
 /**
@@ -47,7 +47,7 @@ import "lib/openzeppelin-contracts/contracts/utils/math/Math.sol";
  *
  * _Available since v4.7._
  */
-abstract contract ERC4626Logris is ERC20, IERC4626Logris {
+abstract contract ERC4626 is ERC20, IERC4626 {
     using Math for uint256;
 
     IERC20 private immutable _asset;

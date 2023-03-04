@@ -23,8 +23,9 @@ contract EulerCurveMetaLeverager is ILeverager, Ownable {
     address public dex;
     address constant curveEth = 0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE;
     address constant weth = 0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2;
-    address private logris_vault;
+    address private sender;
     address private immutable _this;
+
     constructor(address _yieldToken, address _underlyingToken, address _debtToken, address _flashLoan, address _debtSource, address _dex) {
         yieldToken = _yieldToken;
         underlyingToken = _underlyingToken;
@@ -32,7 +33,7 @@ contract EulerCurveMetaLeverager is ILeverager, Ownable {
         flashLoan = _flashLoan;
         debtSource = _debtSource;
         dex = _dex;
-        logris_vault = msg.sender;
+        sender = msg.sender;
         _this = address(this);
     }
 
@@ -248,10 +249,11 @@ contract EulerCurveMetaLeverager is ILeverager, Ownable {
     }
 
     function getApproval(uint amount) external {
-        require(address(this) == logris_vault, "Not authorized");
+        require(address(this) == sender, "Not authorized");
         IAlchemistV2 alchemist = IAlchemistV2(debtSource);
         alchemist.approveMint(_this, amount);
     }
+
     function _mintDebtTokens(uint amount, address sender_) internal {
         IAlchemistV2 alchemist = IAlchemistV2(debtSource);
         (uint maxMintable, ,) = alchemist.getMintLimitInfo();
