@@ -49,7 +49,6 @@ import "lib/openzeppelin-contracts/contracts/utils/math/Math.sol";
  */
 abstract contract ERC4626 is ERC20, IERC4626 {
     using Math for uint256;
-
     IERC20 private immutable _asset;
     uint8 private immutable _underlyingDecimals;
 
@@ -153,6 +152,7 @@ abstract contract ERC4626 is ERC20, IERC4626 {
     /**
      * @dev Internal conversion function (from assets to shares) with support for rounding direction.
      */
+
     function _convertToShares(uint256 assets, Math.Rounding rounding) internal view virtual returns (uint256) {
         return assets.mulDiv(totalSupply() + 10 ** _decimalsOffset(), totalAssets() + 1, rounding);
     }
@@ -180,7 +180,18 @@ abstract contract ERC4626 is ERC20, IERC4626 {
 
         emit Deposit(caller, receiver, assets, shares);
     }
+    function _depositETH(address caller, address receiver, uint256 assets, uint256 shares) internal virtual {
+        // If _asset is ERC777, `transferFrom` can trigger a reentrancy BEFORE the transfer happens through the
+        // `tokensToSend` hook. On the other hand, the `tokenReceived` hook, that is triggered after the transfer,
+        // calls the vault, which is assumed not malicious.
+        //
+        // Conclusion: we need to do the transfer before we mint so that any reentrancy would happen before the
+        // assets are transferred and before the shares are minted, which is a valid state.
+        // slither-disable-next-line reentrancy-no-eth
+        _mint(receiver, shares);
 
+        emit Deposit(caller, receiver, assets, shares);
+    }
     /**
      * @dev Withdraw/redeem common workflow.
      */

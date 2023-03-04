@@ -22,6 +22,7 @@ interface ILeveragedVault is IERC4626 {
     function convertUnderlyingTokensToShares(uint256 amount) external view returns (uint256 shares);
     function convertSharesToUnderlyingTokens(uint256 shares) external view returns (uint256 amount);
     function depositUnderlying(uint amount) external returns(uint shares);
+    function depositUnderlying() external payable returns(uint shares);
     function withdrawUnderlying(uint shares) external returns(uint amount);
     function leverage() external;
 }
