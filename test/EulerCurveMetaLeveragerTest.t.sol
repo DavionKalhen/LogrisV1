@@ -140,7 +140,7 @@ contract EulerCurveMetaLeveragerTest is Test {
         emit DebugValue(depositBalance);
         int256 debtBalance = leverager.getDebtBalance(address(this));
         console.log("final debt balance");
-        emit DebugValue(debtBalance);
+        // emit DebugValue(debtBalance);
         require(depositBalance>=11 ether, "deposited funds too low");        
     }
 
@@ -160,7 +160,7 @@ contract EulerCurveMetaLeveragerTest is Test {
 
         int256 debtBalance = leverager.getDebtBalance(address(this));
         console.log("final debt balance");
-        emit DebugValue(debtBalance);
+        // emit DebugValue(debtBalance);
         require(depositBalance>=11 ether, "deposited funds too low"); 
     }
     //probably also want to test situations where there is existing balance and debt on the caller
