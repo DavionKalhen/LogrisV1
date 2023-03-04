@@ -23,6 +23,8 @@ contract EulerCurveMetaLeverager is ILeverager, Ownable {
     address public dex;
     address constant curveEth = 0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE;
     address constant weth = 0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2;
+    address constant flashloanSource = 0x27182842E098f60e3D576794A5bFFb0777E025d3;
+    address private dTokenAddress;
     uint256 public constant FIXED_POINT_SCALAR = 1e18;
 
     constructor(address _yieldToken, address _underlyingToken, address _debtToken, address _flashLoan, address _debtSource, address _dex) {
@@ -123,7 +125,7 @@ contract EulerCurveMetaLeverager is ILeverager, Ownable {
             _depositUnderlying(depositAmount, underlyingSlippageBasisPoints, msg.sender);
         }
         else {
-            address dTokenAddress = _getDTokenAddress();
+            dTokenAddress = _getDTokenAddress();
             DToken dToken = DToken(dTokenAddress);
             (uint flashLoanAmount, uint mintAmount) = _calculateFlashLoanAmount(depositAmount, underlyingSlippageBasisPoints, debtSlippageBasisPoints, depositCapacity);
             //approve mint needs to be called before msg.sender changes
@@ -144,7 +146,9 @@ contract EulerCurveMetaLeverager is ILeverager, Ownable {
         //if we also refactor to a delegate call design
         console.log("msg.sender:", msg.sender);
         console.log("sender:", sender);
-        require(msg.sender==flashLoan, "callback caller must be flashloan source");
+        console.log("dTokenAddress:", dTokenAddress);
+        console.log("flashLoan:", flashLoan);
+        require(msg.sender==flashloanSource, "callback caller must be flashloan source");
         uint totalDeposit = flashLoanAmount + depositAmount;
         _depositUnderlying(totalDeposit, underlyingSlippageBasisPoints, sender);
         _mintDebtTokens(mintAmount, sender);
