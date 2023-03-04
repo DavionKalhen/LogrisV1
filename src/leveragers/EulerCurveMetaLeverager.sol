@@ -23,8 +23,6 @@ contract EulerCurveMetaLeverager is ILeverager, Ownable {
     address public dex;
     address constant curveEth = 0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE;
     address constant weth = 0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2;
-    address private sender;
-    address private immutable _this;
     uint256 public constant FIXED_POINT_SCALAR = 1e18;
 
     constructor(address _yieldToken, address _underlyingToken, address _debtToken, address _flashLoan, address _debtSource, address _dex) {
@@ -34,8 +32,6 @@ contract EulerCurveMetaLeverager is ILeverager, Ownable {
         flashLoan = _flashLoan;
         debtSource = _debtSource;
         dex = _dex;
-        sender = msg.sender;
-        _this = address(this);
     }
 
     //return amount denominated in underlying tokens
@@ -292,12 +288,6 @@ contract EulerCurveMetaLeverager is ILeverager, Ownable {
             require(false, "Not yet implemented");
         }
     }
-
-    function getApproval(uint amount) external {
-        require(address(this) == sender, "Not authorized");
-        IAlchemistV2 alchemist = IAlchemistV2(debtSource);
-        alchemist.approveMint(_this, amount);
-    }    
 
     function _withdrawUnderlying(uint amount, uint32 underlyingSlippageBasisPoints, address recipient) internal returns(uint withdrawnAmount) {
         IAlchemistV2 alchemist = IAlchemistV2(debtSource);

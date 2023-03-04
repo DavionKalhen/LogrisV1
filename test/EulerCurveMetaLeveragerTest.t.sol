@@ -164,11 +164,11 @@ contract EulerCurveMetaLeveragerTest is Test {
         leverager.leverage(10 ether, 100, 1000);
 
         uint depositBalance = leverager.getDepositedBalance(address(this));
-        console.log("final deposit balance");
+        console.log("final deposit balance: ", depositBalance);
         emit DebugValue(depositBalance);
         int256 debtBalance = leverager.getDebtBalance(address(this));
-        console.log("final debt balance");
-        // emit DebugValue(debtBalance);
+        console.log("final debt balance: ", uint(debtBalance));
+        emit DebugValue(debtBalance);
         require(depositBalance>=11 ether, "deposited funds too low");        
     }
 
