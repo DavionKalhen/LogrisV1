@@ -9,6 +9,8 @@
               <button class="btn btn-outline-secondary" type="button" @click="deposit">Deposit</button>
               <!-- <button class="btn btn-outline-secondary" type="button" @click="withdraw">Withdraw</button>-->
 
+
+
             </div>
             <div class="input-group-append" v-else-if="address === null">
               <button class="btn btn-outline-secondary" type="button" @click="connectWallet">Connect Wallet</button>
@@ -32,7 +34,7 @@
   </div>
 </template>
 
-<script>
+<script lang="ts">
 import {ethers} from 'ethers';
 import {useWalletStore} from './stores/useWalletStore';
 
@@ -43,8 +45,8 @@ components: {
 data() {
   return {
     wallet: useWalletStore(),
-    address: null,
-    amount: "",
+    address: null as string | null,
+    amount: null as null | number,
     loading: false,
   };
 },
@@ -59,38 +61,38 @@ methods: {
     },
     async deposit() {
       this.loading = true;
-      const txn = await this.wallet.depositETH(this.amount).catch((err) => {
+      const txn = await this.wallet.depositETH(this.amount ? this.amount : 0).catch((err) => {
         console.log(err);
         this.loading = false;
       });
 
-      this.amount = "";
+      this.amount = null;
       this.loading = false;
     },
     async leverage() {
       this.loading = true;
-      const txn = await this.wallet.leverage(this.amount).catch((err) => {
+      const txn = await this.wallet.leverage(this.amount!.toString()).catch((err) => {
         console.log(err);
         this.loading = false;
       });
 
-      this.amount = "";
+      this.amount = null;
       this.loading = false;
     },
     async withdraw() {
       this.loading = true;
-      const txn = await this.wallet.withdrawETH(this.amount).catch((err) => {
+      const txn = await this.wallet.withdrawETH(this.amount ? this.amount : 0).catch((err) => {
         console.log(err);
         this.loading = false;
       });
 
-      this.amount = "";
+      this.amount = null;
       this.loading = false;
     },
-    displayBigNum(num) {
+    displayBigNum(num : ethers.BigNumber) {
       return ethers.utils.formatEther(num);
     },
-    toBigNum(num) {
+    toBigNum(num : string) {
       return ethers.utils.parseEther(num);
     },
 },
