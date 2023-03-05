@@ -21,14 +21,16 @@ There are a stacked set of conditions the leverage contract needs to handle base
 # Frontend
 
 Our front end is currently running on a fork on Ethereum so we can whitelist our contracts with the Alchemix ones and utilize the Curve and Euler ecosystems on top of Alchemix. The credentials for this fork is at:
-``` RPC URL:  http://45.56.83.209:8885
+``` 
+    RPC URL:  http://45.56.83.209:8885
     ChainID: 0x1
     Token Name: Ethereum
     Token Symbol: Ethereum
 ```
 Please do not use your own wallet to connect to an RPC end point like this as it can be very insecure. Here are several private keys all preloaded with 1000 ETH..
 
-```(0) 0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80
+```
+(0) 0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80
 (1) 0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d
 (2) 0x5de4111afa1a4b94908f83103eb1f1706367c2e68ca870fc3fb9a804cdab365a
 (3) 0x7c852118294e51e653712a81e05800f419141751be58f605c371e15141b007a6
@@ -42,12 +44,17 @@ Please do not use your own wallet to connect to an RPC end point like this as it
 
 Enter the directory
 
-```cd logrisv1-frontend
+```
+cd logrisv1-frontend
 ```
 Install node packages
-```npm i
+
+```
+npm i
 ```
 Run Development Server
-```npm run dev
+
+```
+npm run dev
 ```
 
