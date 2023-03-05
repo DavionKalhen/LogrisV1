@@ -342,7 +342,7 @@ contract EulerCurveMetaLeverager is ILeverager, Ownable {
     function _flashLoanWithdraw(address sender, uint shares, uint flashLoanAmount, uint burnAmount, uint debtTradeMin, uint minUnderlyingOut) internal {
         _swapToDebtTokens(flashLoanAmount, debtTradeMin);
         _burnDebt(burnAmount, sender);
-        alchemist.withdrawUnderlyingFrom(sender, yieldToken, shares, address(this), minUnderlyingOut);
+        _withdrawUnderlying(sender, shares, minUnderlyingOut);
         _repayFlashLoan(flashLoanAmount);
         IERC20 token = IERC20(underlyingToken);
         TransferHelper.safeTransfer(underlyingToken, sender, token.balanceOf(address(this)));
@@ -369,6 +369,12 @@ contract EulerCurveMetaLeverager is ILeverager, Ownable {
         alchemist.burn(burnAmount, sender);
         console.log("Burned: ", burnAmount, sender);
         emit Burn(debtToken, burnAmount);
+    }
+
+    function _withdrawUnderlying(address sender, uint shares, uint minUnderlyingOut) internal {
+        uint underlying = alchemist.withdrawUnderlyingFrom(sender, yieldToken, shares, address(this), minUnderlyingOut);
+        console.log("WithdrawUnderlying: ", shares, underlying);
+        emit WithdrawUnderlying(underlyingToken, shares, underlying);
     }
 
     fallback() external payable {

@@ -241,8 +241,10 @@ contract EulerCurveMetaLeveragerTest is Test {
         deposit10Weth();
         borrowAlETH(4 ether);
         uint totalShares = leverager.getTotalWithdrawCapacity(address(this));
+        alchemist.approveWithdraw(address(leverager), wstETHAddress, 10 ether);//last parameter denominated in shares
         leverager.withdrawUnderlying(totalShares, 300, 10);
         uint withdrawnFunds = wETH.balanceOf(address(this));
-        require(withdrawnFunds>=8 ether,"Insufficient withdraw");
+        //we also still have 4 ETH sitting around.
+        require(withdrawnFunds>=5 ether,"Insufficient withdraw");
     }
 }
