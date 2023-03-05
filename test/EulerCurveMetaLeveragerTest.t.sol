@@ -228,10 +228,12 @@ contract EulerCurveMetaLeveragerTest is Test {
         setVaultCapacity(wstETHAddress, 20 ether);
         deposit10Weth();
         borrowAlETH(1 ether);
+        uint freeShares = leverager.getFreeWithdrawCapacity(address(this));
+        console.log("freeShares: ", freeShares);
         alchemist.approveWithdraw(address(leverager), wstETHAddress, 10 ether);//last parameter denominated in shares
-        leverager.withdrawUnderlying(2 ether, 100, 10);
+        leverager.withdrawUnderlying(freeShares, 100, 10);
         uint withdrawnFunds = wETH.balanceOf(address(this));
-        require(withdrawnFunds>=2 ether,"Insufficient withdraw");
+        require(withdrawnFunds>=7 ether,"Insufficient withdraw");
     }
 
     function testWithdrawRequiringLiquidation() public {

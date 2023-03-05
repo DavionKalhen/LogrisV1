@@ -327,7 +327,7 @@ contract EulerCurveMetaLeverager is ILeverager, Ownable {
 
     function withdrawUnderlying(uint shares, uint32 underlyingSlippageBasisPoints, uint32 debtSlippageBasisPoints) external {
         require(shares>0, "must include shares to withdraw");
-        require(getTotalWithdrawCapacity(msg.sender)<shares, "shares exceeds capacity");
+        require(shares<getTotalWithdrawCapacity(msg.sender), "shares exceeds capacity");
         (uint flashLoanAmount, uint burnAmount, uint debtTradeMin, uint minUnderlyingOut) = getWithdrawParameters(shares, underlyingSlippageBasisPoints, debtSlippageBasisPoints);
         if(burnAmount==0) {
             alchemist.withdrawUnderlyingFrom(msg.sender, yieldToken, shares, msg.sender, minUnderlyingOut);
