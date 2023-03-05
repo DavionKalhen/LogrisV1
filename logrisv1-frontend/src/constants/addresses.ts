@@ -1,0 +1,9 @@
+var addresses = {
+    1: {
+        "WETH": "0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2",
+        "LOGRISVAULT": "0x7bdd3b028C4796eF0EAf07d11394d0d9d8c24139",
+        "YIELDTOKEN": "0x7f39C581F595B53c5cb19bD0b3f8dA6c935E2Ca0",
+        "ALCHEMIXV2": "0x062Bf725dC4cDF947aa79Ca2aaCCD4F385b13b5c",
+    }
+}
+export { addresses }
