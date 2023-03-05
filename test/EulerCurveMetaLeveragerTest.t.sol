@@ -236,12 +236,13 @@ contract EulerCurveMetaLeveragerTest is Test {
         require(withdrawnFunds>=7 ether,"Insufficient withdraw");
     }
 
-    function testWithdrawRequiringLiquidation() public {
+    function testWithdrawRequiringBurn() public {
         setVaultCapacity(wstETHAddress, 20 ether);
         deposit10Weth();
         borrowAlETH(4 ether);
-        leverager.withdrawUnderlying(6 ether, 300, 10);
+        uint totalShares = leverager.getTotalWithdrawCapacity(address(this));
+        leverager.withdrawUnderlying(totalShares, 300, 10);
         uint withdrawnFunds = wETH.balanceOf(address(this));
-        require(withdrawnFunds>=6 ether,"Insufficient withdraw");
+        require(withdrawnFunds>=8 ether,"Insufficient withdraw");
     }
 }

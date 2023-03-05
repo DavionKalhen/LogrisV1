@@ -327,7 +327,7 @@ contract EulerCurveMetaLeverager is ILeverager, Ownable {
 
     function withdrawUnderlying(uint shares, uint32 underlyingSlippageBasisPoints, uint32 debtSlippageBasisPoints) external {
         require(shares>0, "must include shares to withdraw");
-        require(shares<getTotalWithdrawCapacity(msg.sender), "shares exceeds capacity");
+        require(shares<=getTotalWithdrawCapacity(msg.sender), "shares exceeds capacity");
         (uint flashLoanAmount, uint burnAmount, uint debtTradeMin, uint minUnderlyingOut) = getWithdrawParameters(shares, underlyingSlippageBasisPoints, debtSlippageBasisPoints);
         if(burnAmount==0) {
             alchemist.withdrawUnderlyingFrom(msg.sender, yieldToken, shares, msg.sender, minUnderlyingOut);
@@ -341,7 +341,7 @@ contract EulerCurveMetaLeverager is ILeverager, Ownable {
 
     function _flashLoanWithdraw(address sender, uint shares, uint flashLoanAmount, uint burnAmount, uint debtTradeMin, uint minUnderlyingOut) internal {
         _swapToDebtTokens(flashLoanAmount, debtTradeMin);
-        alchemist.burn(burnAmount, sender);
+        _burnDebt(burnAmount, sender);
         alchemist.withdrawUnderlyingFrom(sender, yieldToken, shares, address(this), minUnderlyingOut);
         _repayFlashLoan(flashLoanAmount);
         IERC20 token = IERC20(underlyingToken);
@@ -350,19 +350,33 @@ contract EulerCurveMetaLeverager is ILeverager, Ownable {
 
     function _swapToDebtTokens(uint amount, uint minAmountOut) internal {
         ICurveFactory curveFactory = ICurveFactory(dex);
-        address swapFrom = underlyingToken == weth ? curveEth : underlyingToken;
-        
+        address swapFrom = underlyingToken;
+        if(underlyingToken == weth) {
+            swapFrom = curveEth;
+            IWETH(weth).withdraw(amount);
+        }
+
         (address pool, uint256 amountOut) = curveFactory.get_best_rate(swapFrom, debtToken, amount);
         require(amountOut>=minAmountOut, "Swap exceeds max acceptable loss");
-        IERC20(underlyingToken).approve(dex, amount);
-        uint amountReceived = curveFactory.exchange(pool, debtToken, swapFrom, amount, minAmountOut, address(this));
+        uint amountReceived = curveFactory.exchange{value:amount}(pool, swapFrom, debtToken, amount, minAmountOut);
         console.log("Swapped: ", amount, amountReceived);
         emit Swap(underlyingToken, debtToken, amount, amountReceived);
     }
 
+    function _burnDebt(uint burnAmount, address sender) internal {
+        IERC20 token = IERC20(debtToken);
+        token.approve(debtSource, burnAmount);
+        alchemist.burn(burnAmount, sender);
+        console.log("Burned: ", burnAmount, sender);
+        emit Burn(debtToken, burnAmount);
+    }
+
     fallback() external payable {
-        IWETH(weth).deposit{value: msg.value}();
-        console.log("WETH deposited");
-        console.log(msg.value);
+        if(msg.sender!=weth) {
+            IWETH(weth).deposit{value: msg.value}();
+            console.log("WETH deposited: ", msg.value);
+        } else {
+            console.log("ETH unwrapped from wETH: ", msg.value);
+        }
     }
 }

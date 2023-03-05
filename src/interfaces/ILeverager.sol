@@ -6,6 +6,7 @@ interface ILeverager is IFlashLoan {
     event DepositUnderlying(address indexed underlyingToken, uint256 sent, uint256 credited);
     event Mint(address indexed yieldToken, uint256 amount);
     event Swap(address debtToken, address underlyingToken, uint256 debtAmount, uint256 underlyingAmount);
+    event Burn(address debtToken, uint amount);
 
     function getDepositedBalance(address depositor) external view returns(uint amount);
     function getDebtBalance(address depositor) external view returns(int256 amount);
