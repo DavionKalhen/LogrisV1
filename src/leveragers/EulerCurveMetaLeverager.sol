@@ -19,19 +19,19 @@ contract EulerCurveMetaLeverager is ILeverager, Ownable {
     address public underlyingToken;
     address public debtToken;
     address public flashLoan;
+    address public flashLoanSender;//will be replaced by a calculation eventually
     address public debtSource;
     address public dex;
     address constant curveEth = 0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE;
     address constant weth = 0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2;
-    address constant flashloanSource = 0x27182842E098f60e3D576794A5bFFb0777E025d3;
-    address private dTokenAddress;
     uint256 public constant FIXED_POINT_SCALAR = 1e18;
 
-    constructor(address _yieldToken, address _underlyingToken, address _debtToken, address _flashLoan, address _debtSource, address _dex) {
+    constructor(address _yieldToken, address _underlyingToken, address _debtToken, address _flashLoan, address _flashLoanSender, address _debtSource, address _dex) {
         yieldToken = _yieldToken;
         underlyingToken = _underlyingToken;
         debtToken = _debtToken;
         flashLoan = _flashLoan;
+        flashLoanSender = _flashLoanSender;
         debtSource = _debtSource;
         dex = _dex;
     }
@@ -125,13 +125,13 @@ contract EulerCurveMetaLeverager is ILeverager, Ownable {
             _depositUnderlying(depositAmount, underlyingSlippageBasisPoints, msg.sender);
         }
         else {
-            dTokenAddress = _getDTokenAddress();
+            address dTokenAddress = _getDTokenAddress();
             DToken dToken = DToken(dTokenAddress);
             (uint flashLoanAmount, uint mintAmount) = _calculateFlashLoanAmount(depositAmount, underlyingSlippageBasisPoints, debtSlippageBasisPoints, depositCapacity);
             //approve mint needs to be called before msg.sender changes
             //requires change to delegate call first. this is prep work.
             //alchemist.approveMint(address, amount);
-            bytes memory data = abi.encode(msg.sender, flashLoanAmount, depositAmount, mintAmount, underlyingSlippageBasisPoints, debtSlippageBasisPoints);
+            bytes memory data = abi.encode(msg.sender, flashLoanSender, flashLoanAmount, depositAmount, mintAmount, underlyingSlippageBasisPoints, debtSlippageBasisPoints);
             dToken.flashLoan(flashLoanAmount, data);
         }
         //the dust should get transmitted back to msg.sender but it might not be worth the gas...
@@ -140,15 +140,14 @@ contract EulerCurveMetaLeverager is ILeverager, Ownable {
     }
 
     function onFlashLoan(bytes memory data) external {
-        (address sender, uint flashLoanAmount, uint depositAmount, uint mintAmount, uint32 underlyingSlippageBasisPoints, uint32 debtSlippageBasisPoints) = abi.decode(data, (address, uint, uint, uint, uint32, uint32));
+        (address sender, address flashLoanSender, uint flashLoanAmount, uint depositAmount, uint mintAmount, uint32 underlyingSlippageBasisPoints, uint32 debtSlippageBasisPoints) = abi.decode(data, (address, address, uint, uint, uint, uint32, uint32));
         //We'd really like to find a way to flashloan while retaining msg.sender.
         //so that we don't need a mint allowance on alchemix to ourselves
         //if we also refactor to a delegate call design
         console.log("msg.sender:", msg.sender);
         console.log("sender:", sender);
-        console.log("dTokenAddress:", dTokenAddress);
-        console.log("flashLoan:", flashLoan);
-        require(msg.sender==flashloanSource, "callback caller must be flashloan source");
+        console.log("flashLoanSender:", flashLoanSender);
+        require(msg.sender==flashLoanSender, "callback caller must be flashloan source");
         uint totalDeposit = flashLoanAmount + depositAmount;
         _depositUnderlying(totalDeposit, underlyingSlippageBasisPoints, sender);
         _mintDebtTokens(mintAmount, sender);

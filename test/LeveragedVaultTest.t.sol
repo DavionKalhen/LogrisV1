@@ -17,6 +17,7 @@ contract LeveragedVaultTest is Test {
     address iDAIAddress = 0x6B175474E89094C44Da98b954EedeAC495271d0F;
     address uniswapv2RouterAddress = 0x7a250d5630B4cF539739dF2C5dAcb4c659F2488D;
     address eulerMarketsAddress = 0x3520d5a913427E6F0D6A83E07ccD4A4da316e4d3;
+    address eulerCallbackSender = 0x27182842E098f60e3D576794A5bFFb0777E025d3;
     address curveFactoryAddress = 0x99a58482BD75cbab83b27EC03CA68fF489b5788f;
     address alchemistV2Address = 0x062Bf725dC4cDF947aa79Ca2aaCCD4F385b13b5c;
     address alETHAddress = 0x0100546F2cD4C9D97f798fFC9755E47865FF7Ee6;
@@ -36,10 +37,9 @@ contract LeveragedVaultTest is Test {
         user1 = vm.addr(1);
         vm.deal(user1, 200 ether);
         vm.deal(vm.addr(2), 200 ether);
-        leverager = new EulerCurveMetaLeverager(wstETHAddress, wETHAddress, alETHAddress, eulerMarketsAddress, alchemistV2Address, curveFactoryAddress);
+        leverager = new EulerCurveMetaLeverager(wstETHAddress, wETHAddress, alETHAddress, eulerMarketsAddress, eulerCallbackSender, alchemistV2Address, curveFactoryAddress);
 
         alchemist = IAlchemistV2(alchemistV2Address);
-        address alchemixOwner = alchemist.admin();
         
         whitelist = Whitelist(alchemist.whitelist());
         vm.startPrank(whitelist.owner());
@@ -96,6 +96,7 @@ contract LeveragedVaultTest is Test {
         assertEq(value, 10 ether);
         assertEq(heldAssets, 10 ether);
     }
+
     function testMultipleETHDepositToVault() public {
         initLeveragedVault();
         vm.startPrank(user1);
@@ -138,7 +139,6 @@ contract LeveragedVaultTest is Test {
         vm.startPrank(user1);
         leveragedVault.depositUnderlying{value: 10 ether}();
         leveragedVault.leverage();
-        uint256 heldAssets = leveragedVault.getVaultRedeemableBalance();
         uint256 userBalance = leveragedVault.balanceOf(user1);
         uint supply = leveragedVault.totalSupply();
         console.log("Supply: ", supply);
@@ -164,7 +164,6 @@ contract LeveragedVaultTest is Test {
         uint256 userBalance = leveragedVault.balanceOf(user1);
         uint256 user2Balance = leveragedVault.balanceOf(vm.addr(2));
         uint256 user3Balance = leveragedVault.balanceOf(vm.addr(3));
-        uint supply = leveragedVault.totalSupply();
         console.log("Redeemable  : ", redeemable);
         console.log("Total Assets: ", totalAssets);
         console.log("Withdraw Cap: ", withdrawCap);
@@ -206,7 +205,6 @@ contract LeveragedVaultTest is Test {
         uint256 user2Balance = leveragedVault.balanceOf(vm.addr(2));
         uint256 user3Balance = leveragedVault.balanceOf(vm.addr(3));
         uint256 user4Balance = leveragedVault.balanceOf(vm.addr(4));
-        uint supply = leveragedVault.totalSupply();
         console.log("Redeemable  : ", redeemable);
         console.log("Total Assets: ", totalAssets);
         console.log("Withdraw Cap: ", withdrawCap);

@@ -13,10 +13,11 @@ contract LeveragedVaultFactory is ILeveragedVaultFactory, ReentrancyGuard, Ownab
 
     constructor() {}
 
-    function createVault(string memory _tokenName, string memory _tokenDescription, address _yieldToken, address _underlyingToken, address _leverager, uint32 _underlyingSlippageBasisPoints, uint32 _debtSlippageBasisPoints) external onlyOwner returns (address) {
+    function createVault(string memory _tokenName, string memory _tokenDescription, address _yieldToken, address _underlyingToken, address _leverager, address _alchemistV2, uint32 _underlyingSlippageBasisPoints, uint32 _debtSlippageBasisPoints) external onlyOwner returns (address) {
         require(vaults[_yieldToken] == address(0), "Vault already exists");
         //something also needs to create the leverager and pass that address in
-        address vault = address(new LeveragedVault(_tokenName, _tokenDescription, _yieldToken, _underlyingToken, _leverager, _underlyingSlippageBasisPoints, _debtSlippageBasisPoints));
+
+        address vault = address(new LeveragedVault(_tokenName, _tokenDescription, _yieldToken, _underlyingToken, _leverager, _alchemistV2, _underlyingSlippageBasisPoints, _debtSlippageBasisPoints));
         vaults[_yieldToken] = vault;
         return vault;
     }

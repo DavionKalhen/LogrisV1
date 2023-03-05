@@ -20,26 +20,30 @@ contract LeveragedVault is Ownable, ERC4626, ILeveragedVault {
     uint32 public debtSlippageBasisPoints;
     IWETH private wETH;
     address public debtSource;
+    address constant wETHAddress  = 0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2;
 
     constructor(
-    string memory _tokenName,
-    string memory _tokenDescription,
-    address _yieldToken,
-    address _underlyingToken,
-    address _leverager,
-    address _debtSource,
-    uint32 _underlyingSlippageBasisPoints,
-    uint32 _debtSlippageBasisPoints) payable
-    ERC4626(IERC20(_yieldToken))
-    ERC20(_tokenDescription, _tokenName) {
+        string memory _tokenName,
+        string memory _tokenDescription,
+        address _yieldToken,
+        address _underlyingToken,
+        address _leverager,
+        address _debtSource,
+        uint32 _underlyingSlippageBasisPoints,
+        uint32 _debtSlippageBasisPoints) payable
+        ERC4626(IERC20(_yieldToken))
+        ERC20(_tokenDescription, _tokenName)
+    {
         leverager = ILeverager(_leverager);
         yieldToken = IERC20(_yieldToken);
         underlyingToken = IERC20(_underlyingToken);
         underlyingSlippageBasisPoints = _underlyingSlippageBasisPoints;
         debtSlippageBasisPoints = _debtSlippageBasisPoints;
-        wETH = IWETH(0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2);
+        wETH = IWETH(wETHAddress);
         wETH.deposit{value:msg.value}();
-        _mint(msg.sender, msg.value);
+        if(_underlyingToken==wETHAddress) {
+            _mint(msg.sender, msg.value);
+        }
         debtSource = _debtSource;
     }
 
@@ -109,6 +113,7 @@ contract LeveragedVault is Ownable, ERC4626, ILeveragedVault {
         uint256 depositAmount = underlyingToken.balanceOf(address(this));
         int256 debtBefore = leverager.getDebtBalance(address(this));
         IAlchemistV2 alchemist = IAlchemistV2(debtSource);
+        //this calculation won't be right until the getLeverageParameters call has been written
         alchemist.approveMint(address(leverager), depositAmount);      
 
         wETH.approve(address(leverager), depositAmount);

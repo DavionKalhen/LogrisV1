@@ -16,6 +16,7 @@ contract EulerCurveMetaLeveragerTest is Test {
     address wETHAddress = 0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2;
     address alETHAddress = 0x0100546F2cD4C9D97f798fFC9755E47865FF7Ee6;
     address eulerMarketsAddress = 0x3520d5a913427E6F0D6A83E07ccD4A4da316e4d3;
+    address eulerCallbackSender = 0x27182842E098f60e3D576794A5bFFb0777E025d3;
     address curveFactoryAddress = 0x99a58482BD75cbab83b27EC03CA68fF489b5788f;
     address alchemistV2Address = 0x062Bf725dC4cDF947aa79Ca2aaCCD4F385b13b5c;
     //this is the alUSD alchemist
@@ -30,7 +31,7 @@ contract EulerCurveMetaLeveragerTest is Test {
 
     function setUp() public {
         vm.deal(address(this), 200 ether);
-        leverager = new EulerCurveMetaLeverager(wstETHAddress, wETHAddress, alETHAddress, eulerMarketsAddress, alchemistV2Address, curveFactoryAddress);
+        leverager = new EulerCurveMetaLeverager(wstETHAddress, wETHAddress, alETHAddress, eulerMarketsAddress, eulerCallbackSender, alchemistV2Address, curveFactoryAddress);
         //setup whitelist
         alchemist = IAlchemistV2(alchemistV2Address);
         whitelist = Whitelist(alchemist.whitelist());
