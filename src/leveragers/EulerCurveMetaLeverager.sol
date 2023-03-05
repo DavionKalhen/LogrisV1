@@ -89,16 +89,21 @@ contract EulerCurveMetaLeverager is ILeverager, Ownable {
         amount = debtAdjustedBalance * FIXED_POINT_SCALAR / minimumCollateralization;
     }
 
+    function getTotalWithdrawCapacity(address _depositor) public view returns (uint shares) {
+        (shares,) = alchemist.positions(_depositor, yieldToken);
+        return shares;
+    }
+
     //gets the withdraw capacity of the vault without liquidation
-    //see getRedeemableBalance for the withdraw capacity with liquidation
-    function getWithdrawCapacity(address _depositor) public view returns(uint amount) {
+    function getFreeWithdrawCapacity(address _depositor) public view returns(uint shares) {
         uint256 minimumCollateralization = alchemist.minimumCollateralization();//includes 1e18
 
-        uint depositBalance = getDepositedBalance(_depositor);     
+        (uint256 totalShares,) = alchemist.positions(_depositor, yieldToken);
         int256 debtBalance = getDebtBalance(_depositor);
         uint clampedDebt = (debtBalance<=0) ? 0: uint(debtBalance);
+        uint debtShares = alchemist.normalizeDebtTokensToUnderlying(underlyingToken, clampedDebt) * minimumCollateralization / FIXED_POINT_SCALAR;
 
-        amount = depositBalance - (alchemist.normalizeDebtTokensToUnderlying(underlyingToken, clampedDebt) * minimumCollateralization / FIXED_POINT_SCALAR);
+        shares = totalShares - debtShares;
     }
 
     /*  This is going to be a meaty calculation.
@@ -150,7 +155,7 @@ contract EulerCurveMetaLeverager is ILeverager, Ownable {
         mintAmount = (minDepositUnderlyingAmount/2)+borrowCapacity
         minDebtTradeAmount = mintAmount*debtToUnderlyingRatio*debtSlippage
     */
-    function getLeverageParameters (uint depositAmount, uint32 underlyingSlippageBasisPoints, uint32 debtSlippageBasisPoints) public view returns(uint clampedDeposit, uint flashLoanAmount, uint underlyingDepositMin, uint mintAmount, uint debtTradeMin) {
+    function getLeverageParameters(uint depositAmount, uint32 underlyingSlippageBasisPoints, uint32 debtSlippageBasisPoints) public view returns(uint clampedDeposit, uint flashLoanAmount, uint underlyingDepositMin, uint mintAmount, uint debtTradeMin) {
         uint depositCapacity = getDepositCapacity();
         if(depositCapacity <= depositAmount) {
             clampedDeposit = depositCapacity;
@@ -174,6 +179,43 @@ contract EulerCurveMetaLeverager is ILeverager, Ownable {
         }
     }
 
+    /*  While there is a liquidate call it can't be called on someone else's behalf which makes this more complicated.
+        Unlike everything else on Alchemist there is no liquidateFrom so we have to flashloan to unwind the leverage.
+        Basically this makes this the reverse of depositing with leverage.
+
+        Assuming we have a withdraw share amount needed after shares available for withdraw:
+        We need to repay repayAmount to free up withdrawShares
+        e.g.
+        flash loan X
+        trade X for debt                                    receive flashLoanAmount*debtTradeLoss underlying
+        burn debt freeing up Y shares                       receive debt*2 withdrawable      
+        Withdraw Y shares to underlying                     receive withdrawable*underlyingSlippage underlying
+        repay X, keep Y profit
+
+        debtTradeLoss = debtToUnderlyingRatio * debtSlippage
+        withdrawTradeLoss = underlyingSlippage
+
+        To free Y shares, you need to burn debtAmount=Y*sharesPerUnderlying/collateralization 
+        To get debtAmount you need to borrow flashLoanAmount*debtTradeLoss
+        therefore Y*sharesPerUnderlying/collateralization = flashLoanAmount*debtTradeLoss
+        flashLoanAmount=Y*sharesPerUnderlying/(collateralization*debtTradeLoss)
+    */
+    function getWithdrawParameters(uint shares, uint32 underlyingSlippageBasisPoints, uint32 debtSlippageBasisPoints) public view returns(uint flashLoanAmount, uint burnAmount, uint debtTradeMin, uint minUnderlyingOut) {
+        uint freeShares = getFreeWithdrawCapacity(msg.sender);
+        if(shares<=freeShares) {
+            console.log("simple withdraw");
+            minUnderlyingOut = _basisPointAdjustment(shares, underlyingSlippageBasisPoints);
+        } else {
+            uint remainingShares = shares-freeShares;
+            uint debtTradeLoss =  _basisPointAdjustment(1 ether, debtSlippageBasisPoints);
+
+            flashLoanAmount=alchemist.convertSharesToUnderlyingTokens(yieldToken, remainingShares)*1e36/(alchemist.minimumCollateralization()*debtTradeLoss);
+            burnAmount = _basisPointAdjustment(flashLoanAmount, debtSlippageBasisPoints);
+            debtTradeMin = burnAmount;
+            minUnderlyingOut = _basisPointAdjustment(flashLoanAmount-burnAmount, underlyingSlippageBasisPoints);
+        }
+    }
+
     /// @dev Fills up as much vault capacity as possible using leverage.
     ///
     /// @param depositAmount Max amount of underlying token to use as the base deposit
@@ -191,26 +233,30 @@ contract EulerCurveMetaLeverager is ILeverager, Ownable {
         } else {
             address dTokenAddress = _getDTokenAddress();
             DToken dToken = DToken(dTokenAddress);
-            //approve mint needs to be called before msg.sender changes
-            //requires change to delegate call first. this is prep work.
-            //alchemist.approveMint(address, amount);
-            bytes memory data = abi.encode(msg.sender, flashLoanSender, clampedDeposit, flashLoanAmount, underlyingDepositMin, mintAmount, debtTradeMin);
+            bytes memory data = abi.encode(msg.sender, flashLoanSender, true, clampedDeposit, flashLoanAmount, underlyingDepositMin, mintAmount, debtTradeMin);
             dToken.flashLoan(flashLoanAmount, data);
         }
         //the dust should get transmitted back to msg.sender but it might not be worth the gas...
-        //better solved with a delegate call pattern but that would stop the leverager from
-        //working with EOA accounts
     }
 
+    // so its really tricky having to have a contract receive the same callback signature with two different callback flows...
+    // as luck would have it deposit and withdraw have the same number of parameters on their callback
     function onFlashLoan(bytes memory data) external {
-        (address sender, address flashLoanSender, uint clampedDeposit, uint flashLoanAmount, uint underlyingDepositMin, uint mintAmount, uint debtTradeMin) = abi.decode(data, (address, address, uint, uint, uint, uint, uint));
+        (address sender, address flashLoanSender, bool depositFlag, uint param1, uint param2, uint param3, uint param4, uint param5) = abi.decode(data, (address, address, bool, uint, uint, uint, uint, uint));
         //We'd really like to find a way to flashloan while retaining msg.sender.
-        //so that we don't need a mint allowance on alchemix to ourselves
-        //if we also refactor to a delegate call design
+        //so that we don't need a mint allowance on alchemix to the leverager
         console.log("msg.sender:", msg.sender);
         console.log("sender:", sender);
         console.log("flashLoanSender:", flashLoanSender);
         require(msg.sender==flashLoanSender, "callback caller must be flashloan source");
+        if(depositFlag) {
+            _flashLoanDeposit(sender, param1, param2, param3, param4, param5);
+        } else {
+            _flashLoanWithdraw(sender, param1, param2, param3, param4, param5);
+        }
+    }
+
+    function _flashLoanDeposit(address sender, uint clampedDeposit, uint flashLoanAmount, uint underlyingDepositMin, uint mintAmount, uint debtTradeMin) internal {
         uint totalDeposit = clampedDeposit + flashLoanAmount;
         _depositUnderlying(totalDeposit, underlyingDepositMin, sender);
         _mintDebtTokens(mintAmount, sender);
@@ -280,29 +326,64 @@ contract EulerCurveMetaLeverager is ILeverager, Ownable {
         return amountIn * (10000+slippageBasisPoints) / 10000;
     }
 
-    //Just like with leverage we need to calculate whether we can withdraw without liquidating
-    function withdrawUnderlying(uint amount, uint32 underlyingSlippageBasisPoints) external returns(uint withdrawnAmount) {
-        require(amount>0);
-        uint withdrawCapacity = getWithdrawCapacity(msg.sender);
-        console.log("withdraw capacity: ", withdrawCapacity);
-        if(amount<withdrawCapacity) {
-            console.log("simple withdraw");
-            withdrawnAmount = _withdrawUnderlying(amount, underlyingSlippageBasisPoints, msg.sender);
+    function withdrawUnderlying(uint shares, uint32 underlyingSlippageBasisPoints, uint32 debtSlippageBasisPoints) external {
+        require(shares>0, "must include shares to withdraw");
+        require(shares<=getTotalWithdrawCapacity(msg.sender), "shares exceeds capacity");
+        (uint flashLoanAmount, uint burnAmount, uint debtTradeMin, uint minUnderlyingOut) = getWithdrawParameters(shares, underlyingSlippageBasisPoints, debtSlippageBasisPoints);
+        if(burnAmount==0) {
+            alchemist.withdrawUnderlyingFrom(msg.sender, yieldToken, shares, msg.sender, minUnderlyingOut);
         } else {
-            //TODO: implement withdraw with liquidation
-            require(false, "Not yet implemented");
+            address dTokenAddress = _getDTokenAddress();
+            DToken dToken = DToken(dTokenAddress);
+            bytes memory data = abi.encode(msg.sender, flashLoanSender, false, shares, flashLoanAmount, burnAmount, debtTradeMin, minUnderlyingOut);
+            dToken.flashLoan(flashLoanAmount, data);
         }
     }
 
-    function _withdrawUnderlying(uint amount, uint32 underlyingSlippageBasisPoints, address recipient) internal returns(uint withdrawnAmount) {
-        uint adjustedUnderlying = _basisPointAdjustmentUp(amount, underlyingSlippageBasisPoints);
-        uint shares = alchemist.convertUnderlyingTokensToShares(yieldToken, adjustedUnderlying);
-        withdrawnAmount = alchemist.withdrawUnderlyingFrom(recipient, yieldToken, shares, recipient, amount);
+    function _flashLoanWithdraw(address sender, uint shares, uint flashLoanAmount, uint burnAmount, uint debtTradeMin, uint minUnderlyingOut) internal {
+        _swapToDebtTokens(flashLoanAmount, debtTradeMin);
+        _burnDebt(burnAmount, sender);
+        _withdrawUnderlying(sender, shares, minUnderlyingOut);
+        _repayFlashLoan(flashLoanAmount);
+        IERC20 token = IERC20(underlyingToken);
+        TransferHelper.safeTransfer(underlyingToken, sender, token.balanceOf(address(this)));
+    }
+
+    function _swapToDebtTokens(uint amount, uint minAmountOut) internal {
+        ICurveFactory curveFactory = ICurveFactory(dex);
+        address swapFrom = underlyingToken;
+        if(underlyingToken == weth) {
+            swapFrom = curveEth;
+            IWETH(weth).withdraw(amount);
+        }
+
+        (address pool, uint256 amountOut) = curveFactory.get_best_rate(swapFrom, debtToken, amount);
+        require(amountOut>=minAmountOut, "Swap exceeds max acceptable loss");
+        uint amountReceived = curveFactory.exchange{value:amount}(pool, swapFrom, debtToken, amount, minAmountOut);
+        console.log("Swapped: ", amount, amountReceived);
+        emit Swap(underlyingToken, debtToken, amount, amountReceived);
+    }
+
+    function _burnDebt(uint burnAmount, address sender) internal {
+        IERC20 token = IERC20(debtToken);
+        token.approve(debtSource, burnAmount);
+        alchemist.burn(burnAmount, sender);
+        console.log("Burned: ", burnAmount, sender);
+        emit Burn(debtToken, burnAmount);
+    }
+
+    function _withdrawUnderlying(address sender, uint shares, uint minUnderlyingOut) internal {
+        uint underlying = alchemist.withdrawUnderlyingFrom(sender, yieldToken, shares, address(this), minUnderlyingOut);
+        console.log("WithdrawUnderlying: ", shares, underlying);
+        emit WithdrawUnderlying(underlyingToken, shares, underlying);
     }
 
     fallback() external payable {
-        IWETH(weth).deposit{value: msg.value}();
-        console.log("WETH deposited");
-        console.log(msg.value);
+        if(msg.sender!=weth) {
+            IWETH(weth).deposit{value: msg.value}();
+            console.log("WETH deposited: ", msg.value);
+        } else {
+            console.log("ETH unwrapped from wETH: ", msg.value);
+        }
     }
 }

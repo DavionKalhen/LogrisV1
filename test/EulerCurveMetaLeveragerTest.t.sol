@@ -122,17 +122,17 @@ contract EulerCurveMetaLeveragerTest is Test {
         require(alETHBalance > 4.95 ether);
     }
 
-    function testGetWithdrawCapacity() public {
+    function testGetFreeWithdrawCapacity() public {
         setVaultCapacity(wstETHAddress, 10.01 ether);
         deposit10Weth();
-        uint withdrawCapacity = leverager.getWithdrawCapacity(address(this));
+        uint withdrawCapacity = leverager.getFreeWithdrawCapacity(address(this));
         console.log("withdraw capacity before borrow: ", withdrawCapacity);
         emit DebugValue(withdrawCapacity);
         require(withdrawCapacity>=9.95 ether, "Withdraw capacity too low");
         require(withdrawCapacity<=10 ether, "Withdraw capacity too high");
         //then borrow eth and recalculate
         borrowAlETH(1 ether);
-        withdrawCapacity = leverager.getWithdrawCapacity(address(this));
+        withdrawCapacity = leverager.getFreeWithdrawCapacity(address(this));
         console.log("withdraw capacity after borrow: ", withdrawCapacity);
         emit DebugValue(withdrawCapacity);
         require(withdrawCapacity>=7.95 ether, "Withdraw capacity too low");
@@ -193,7 +193,6 @@ contract EulerCurveMetaLeveragerTest is Test {
         require(depositBalance>=11 ether, "deposited funds too low"); 
     }
 
-    //test is failing
     function testExistingBalancesLeverage() public {
         setVaultCapacity(wstETHAddress, 40 ether);
         deposit10Weth();
@@ -229,18 +228,23 @@ contract EulerCurveMetaLeveragerTest is Test {
         setVaultCapacity(wstETHAddress, 20 ether);
         deposit10Weth();
         borrowAlETH(1 ether);
+        uint freeShares = leverager.getFreeWithdrawCapacity(address(this));
+        console.log("freeShares: ", freeShares);
         alchemist.approveWithdraw(address(leverager), wstETHAddress, 10 ether);//last parameter denominated in shares
-        leverager.withdrawUnderlying(2 ether, 100);
+        leverager.withdrawUnderlying(freeShares, 100, 10);
         uint withdrawnFunds = wETH.balanceOf(address(this));
-        require(withdrawnFunds>=2 ether,"Insufficient withdraw");
+        require(withdrawnFunds>=7 ether,"Insufficient withdraw");
     }
 
-    function testWithdrawRequiringLiquidation() public {
+    function testWithdrawRequiringBurn() public {
         setVaultCapacity(wstETHAddress, 20 ether);
         deposit10Weth();
         borrowAlETH(4 ether);
-        leverager.withdrawUnderlying(6 ether, 300);
+        uint totalShares = leverager.getTotalWithdrawCapacity(address(this));
+        alchemist.approveWithdraw(address(leverager), wstETHAddress, 10 ether);//last parameter denominated in shares
+        leverager.withdrawUnderlying(totalShares, 300, 10);
         uint withdrawnFunds = wETH.balanceOf(address(this));
-        require(withdrawnFunds>=6 ether,"Insufficient withdraw");
+        //we also still have 4 ETH sitting around.
+        require(withdrawnFunds>=5 ether,"Insufficient withdraw");
     }
 }

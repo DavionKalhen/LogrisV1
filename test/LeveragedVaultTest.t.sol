@@ -159,7 +159,7 @@ contract LeveragedVaultTest is Test {
         vm.prank(vm.addr(3));
         leveragedVault.depositUnderlying{value: 10 ether}();
         uint256 redeemable = leveragedVault.getVaultRedeemableBalance();
-        uint256 withdrawCap = leverager.getWithdrawCapacity(address(leveragedVault));
+        uint256 withdrawCap = leverager.getFreeWithdrawCapacity(address(leveragedVault));
         uint256 totalAssets = leveragedVault.totalAssets();
         uint256 userBalance = leveragedVault.balanceOf(user1);
         uint256 user2Balance = leveragedVault.balanceOf(vm.addr(2));
@@ -199,7 +199,7 @@ contract LeveragedVaultTest is Test {
         leveragedVault.depositUnderlying{value: 10 ether}();
         leveragedVault.leverage();
         uint256 redeemable = leveragedVault.getVaultRedeemableBalance();
-        uint256 withdrawCap = leverager.getWithdrawCapacity(address(leveragedVault));
+        uint256 withdrawCap = leverager.getFreeWithdrawCapacity(address(leveragedVault));
         uint256 totalAssets = leveragedVault.totalAssets();
         uint256 userBalance = leveragedVault.balanceOf(user1);
         uint256 user2Balance = leveragedVault.balanceOf(vm.addr(2));
