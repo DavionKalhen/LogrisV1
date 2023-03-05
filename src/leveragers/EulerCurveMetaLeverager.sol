@@ -212,6 +212,7 @@ contract EulerCurveMetaLeverager is ILeverager, Ownable {
             flashLoanAmount=alchemist.convertSharesToUnderlyingTokens(yieldToken, remainingShares)*1e36/(alchemist.minimumCollateralization()*debtTradeLoss);
             burnAmount = _basisPointAdjustment(flashLoanAmount, debtSlippageBasisPoints);
             debtTradeMin = burnAmount;
+            minUnderlyingOut = _basisPointAdjustment(flashLoanAmount-burnAmount, underlyingSlippageBasisPoints);
         }
     }
 
