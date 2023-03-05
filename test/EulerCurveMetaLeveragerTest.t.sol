@@ -180,12 +180,12 @@ contract EulerCurveMetaLeveragerTest is Test {
         setVaultCapacity(wstETHAddress, 30 ether);
 
         alchemist.approveMint(address(leverager), wETHinitialDeposit*10000000);
-        leverager.leverage(wETHinitialDeposit, 100, 300);
+        leverager.leverage(wETHinitialDeposit, 100, 400);
         
         uint depositBalance = leverager.getDepositedBalance(address(this));
         console.log("final deposit balance: ", depositBalance);
         emit DebugValue(depositBalance);
-        require(depositBalance>=18 ether, "deposited funds too low");
+        require(depositBalance>=19 ether, "deposited funds too low");
 
         int256 debtBalance = leverager.getDebtBalance(address(this));
         console.log("final debt balance: ", uint(debtBalance));
