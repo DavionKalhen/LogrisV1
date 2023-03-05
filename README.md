@@ -15,3 +15,13 @@ There are a stacked set of conditions the leverage contract needs to handle base
 3) If there is more capacity than the initial deposit but less than max leverage we flashloan as much as is necessary to receive the max deposit amount post slippage, mint as much alAsset as possible, swap it all, repay the loan, and any residual sits in the deposit pool.
 
 4) If there is more ample capacity then we use the flow shown in the architecture overview.
+
+
+
+# Frontend
+
+```cd logrisv1-frontend```
+
+```npm i```
+
+```npm run dev```
