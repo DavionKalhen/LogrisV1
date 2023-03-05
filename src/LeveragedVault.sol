@@ -40,10 +40,7 @@ contract LeveragedVault is Ownable, ERC4626, ILeveragedVault {
         underlyingSlippageBasisPoints = _underlyingSlippageBasisPoints;
         debtSlippageBasisPoints = _debtSlippageBasisPoints;
         wETH = IWETH(wETHAddress);
-        wETH.deposit{value:msg.value}();
-        if(_underlyingToken==wETHAddress) {
-            _mint(msg.sender, msg.value);
-        }
+
         debtSource = _debtSource;
     }
 

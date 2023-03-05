@@ -154,7 +154,9 @@ abstract contract ERC4626 is ERC20, IERC4626 {
      */
 
     function _convertToShares(uint256 assets, Math.Rounding rounding) internal view virtual returns (uint256) {
-        return assets.mulDiv(totalSupply() + 10 ** _decimalsOffset(), totalAssets() + 1, rounding);
+        if(totalSupply() == 0)
+            return assets;
+        return assets * totalSupply() / (totalAssets() - assets);
     }
 
     /**
