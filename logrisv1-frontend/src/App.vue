@@ -2,12 +2,12 @@
   <div class="app">
       <div class="panel">
         <div class="depositAmount">
-          <h1>Deposit Amount</h1>
+          <h2>Logris Vault</h2>
           <div class="input-group">
             <input v-model="amount" type="number" class="form-control" placeholder="Enter Amount" aria-label="Enter Amount" aria-describedby="basic-addon2">
             <div class="input-group-append" v-if="address != null && loading === false">
               <button class="btn btn-outline-secondary" type="button" @click="deposit">Deposit</button>
-              <button class="btn btn-outline-secondary" type="button" @click="withdraw">Withdraw</button>
+              <!-- <button class="btn btn-outline-secondary" type="button" @click="withdraw">Withdraw</button>-->
 
             </div>
             <div class="input-group-append" v-else-if="address === null">
@@ -24,8 +24,9 @@
             <div>Depostied Amount:  {{ parseFloat(displayBigNum(wallet.deposit)).toFixed(2) }}<span></span></div>
             <div>Pool Balance:  {{ parseFloat(displayBigNum(wallet.pool)).toFixed(2) }}<span></span></div>
             <div>Mint Capacity: {{ parseFloat(displayBigNum(wallet.maxMint)).toFixed(2) }}</div>
+            <div>Withdrawable Balance: {{ parseFloat(displayBigNum(wallet.shares)).toFixed(2) }}</div>
         </div>
-        <button v-if="address != null" class="btn btn-outline-secondary leverage" type="button" @click="leverage">Leverage</button>
+        <button v-if="address != null && wallet.leveragable > toBigNum('0') " class="btn btn-outline-secondary leverage" type="button" @click="leverage">Leverage</button>
 
       </div>
   </div>
@@ -76,8 +77,21 @@ methods: {
       this.amount = "";
       this.loading = false;
     },
+    async withdraw() {
+      this.loading = true;
+      const txn = await this.wallet.withdrawETH(this.amount).catch((err) => {
+        console.log(err);
+        this.loading = false;
+      });
+
+      this.amount = "";
+      this.loading = false;
+    },
     displayBigNum(num) {
       return ethers.utils.formatEther(num);
+    },
+    toBigNum(num) {
+      return ethers.utils.parseEther(num);
     },
 },
 }
@@ -87,6 +101,8 @@ methods: {
 body {
   background: linear-gradient(171.08deg,#010101 -11.16%,#141921 6.1%,#0a0d11 49.05%,#000000 93.22%) no-repeat fixed;
   color: #f5f5f5;
+  width: 100vw;
+  height: 100vh;
 }
 </style>
 <style scoped>
@@ -98,6 +114,7 @@ width: 500px;
 min-height: 500px;
 margin: 20vh auto;
 padding: 2rem;
+text-align: center;
 }
 
 input {

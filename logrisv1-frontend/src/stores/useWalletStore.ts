@@ -23,6 +23,7 @@ export const useWalletStore = defineStore({
     pool: ethers.utils.parseEther("0"),
     maxMint: ethers.utils.parseEther("0"),
     leveragable: ethers.utils.parseEther("0"),
+    shares: ethers.utils.parseEther("0"),
     balances: {},
     last_blockheight: 0,
     loading: false,
@@ -80,6 +81,9 @@ export const useWalletStore = defineStore({
         await this.getDepositBalance();
         await this.getFullBalance();
         await this.getMintCapacity();
+        await this.getShares();
+        await this.getVaultBalance();
+
         this.chainId = chainId;
         ethereum.on("accountsChanged", (accounts: string[]) =>
           this.onAccountChange(accounts)
@@ -100,6 +104,16 @@ export const useWalletStore = defineStore({
     },
 
     // Methods
+    async getShares() {
+        const provider =  this.provider;
+        const signer = provider.getSigner();
+        const contract = new ethers.Contract(
+            this.addresses.LOGRISVAULT,
+            LeveragedVaultABI,
+            signer
+        );
+        this.shares = await contract.balanceOf(this.address);
+    },
     async updateBalance() {
       const provider = this.provider;
       const signer = provider.getSigner();
@@ -133,7 +147,7 @@ export const useWalletStore = defineStore({
       this.pool = balance;
       return balance;
     },
-    async leverage() {
+    async leverage(amount: string) {
       const provider = this.provider;
       const signer = provider.getSigner();
 
@@ -143,6 +157,18 @@ export const useWalletStore = defineStore({
         signer
       );
       const tx = await contract.leverage();
+      contract.on("Leverage", async (user, amount, leverage) => {
+        const provider = this.provider;
+        const signer = provider.getSigner();
+        this.balance = await signer.getBalance();        
+        await this.getDepositBalance();
+        await this.getFullBalance();
+        await this.getMintCapacity();
+        await this.getShares();
+        await this.getVaultBalance();
+
+      });
+
       await tx.wait();
     },
     async getMintCapacity() {
@@ -208,11 +234,52 @@ export const useWalletStore = defineStore({
       });
 
       contract.on("DepositUnderlying", async (user, amount, shares) => {
+        const provider = this.provider;
+        const signer = provider.getSigner();
+        this.balance = await signer.getBalance();
         await this.getDepositBalance();
         await this.getFullBalance();
         await this.getMintCapacity();
+        await this.getShares();
+        await this.getVaultBalance();
+
+
       });
       return tx;
+    },
+    async withdrawETH(amount: number) {
+      const provider = this.provider;
+      const signer = provider.getSigner();
+
+      const contract = new ethers.Contract(
+        this.addresses.LOGRISVAULT,
+        LeveragedVaultABI,
+        signer
+      );
+      const tx = await contract.withdrawUnderlying(ethers.utils.parseEther(amount.toFixed(17).toString()));
+      contract.on("WithdrawUnderlying", async (user, amount, shares) => {
+        const provider = this.provider;
+        const signer = provider.getSigner();
+        this.balance = await signer.getBalance();
+        await this.getDepositBalance();
+        await this.getFullBalance();
+        await this.getMintCapacity();
+        await this.getShares();
+        await this.getVaultBalance();
+
+      });
+      return tx;
+    },
+    async getVaultBalance() {
+      const provider = this.provider;
+      const signer = provider.getSigner();
+
+      const contract = new ethers.Contract(
+        this.addresses.WETH,
+        ['function balanceOf(address account) external view returns (uint256)'],
+        signer
+      );
+      this.leveragable  = await contract.balanceOf(this.addresses.LOGRISVAULT);
     }
   },
 });
