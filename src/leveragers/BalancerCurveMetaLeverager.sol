@@ -6,15 +6,15 @@ import "lib/openzeppelin-contracts/contracts/token/ERC20/IERC20.sol";
 import "../interfaces/wETH/IWETH.sol";
 import "../interfaces/alchemist/IAlchemistV2.sol";
 import "../interfaces/alchemist/ITokenAdapter.sol";
-import "../interfaces/euler/IFlashLoan.sol";
-import "../interfaces/euler/DToken.sol";
-import "../interfaces/euler/Markets.sol";
 import "../interfaces/uniswap/TransferHelper.sol";
 import "../interfaces/curve/ICurveFactory.sol";
+import "../interfaces/balancer/IVault.sol";
+import "../interfaces/balancer/IFlashLoanRecipient.sol";
+
 //import console log
 import "forge-std/console.sol";
 
-contract EulerCurveMetaLeverager is ILeverager, Ownable {
+contract BalancerCurveMetaLeverager is ILeverager, Ownable, IFlashLoanRecipient {
     address public yieldToken;
     address public underlyingToken;
     address public debtToken;
@@ -125,29 +125,38 @@ contract EulerCurveMetaLeverager is ILeverager, Ownable {
             _depositUnderlying(depositAmount, underlyingSlippageBasisPoints, msg.sender);
         }
         else {
-            address dTokenAddress = _getDTokenAddress();
-            DToken dToken = DToken(dTokenAddress);
+
             (uint flashLoanAmount, uint mintAmount) = _calculateFlashLoanAmount(depositAmount, underlyingSlippageBasisPoints, debtSlippageBasisPoints, depositCapacity);
             //approve mint needs to be called before msg.sender changes
             //requires change to delegate call first. this is prep work.
             //alchemist.approveMint(address, amount);
-            bytes memory data = abi.encode(msg.sender, flashLoanSender, flashLoanAmount, depositAmount, mintAmount, underlyingSlippageBasisPoints, debtSlippageBasisPoints);
-            dToken.flashLoan(flashLoanAmount, data);
+            bytes memory data = abi.encode(msg.sender, depositAmount, underlyingSlippageBasisPoints, debtSlippageBasisPoints, mintAmount);
+            IERC20[] memory tokens = new IERC20[](1);
+            tokens[0] = IERC20(underlyingToken);
+            uint256[] memory amounts = new uint256[](1);
+            amounts[0] = flashLoanAmount;
+            IVault(flashLoan).flashLoan(this, tokens, amounts, data);
         }
         //the dust should get transmitted back to msg.sender but it might not be worth the gas...
         //better solved with a delegate call pattern but that would stop the leverager from
         //working with EOA accounts
     }
 
-    function onFlashLoan(bytes memory data) external {
-        (address sender, address flashLoanSender, uint flashLoanAmount, uint depositAmount, uint mintAmount, uint32 underlyingSlippageBasisPoints, uint32 debtSlippageBasisPoints) = abi.decode(data, (address, address, uint, uint, uint, uint32, uint32));
+    function receiveFlashLoan(
+        IERC20[] memory tokens,
+        uint256[] memory amounts,
+        uint256[] memory feeAmounts,
+        bytes memory userData
+    ) external override {
+        (address sender, uint depositAmount, uint32 underlyingSlippageBasisPoints, uint32 debtSlippageBasisPoints, uint mintAmount) = abi.decode(userData, (address, uint, uint32, uint32, uint));
         //We'd really like to find a way to flashloan while retaining msg.sender.
         //so that we don't need a mint allowance on alchemix to ourselves
         //if we also refactor to a delegate call design
         console.log("msg.sender:", msg.sender);
         console.log("sender:", sender);
         console.log("flashLoanSender:", flashLoanSender);
-        require(msg.sender==flashLoanSender, "callback caller must be flashloan source");
+        uint flashLoanAmount = amounts[0];
+        require(msg.sender==flashLoan, "callback caller must be flashloan source");
         uint totalDeposit = flashLoanAmount + depositAmount;
         _depositUnderlying(totalDeposit, underlyingSlippageBasisPoints, sender);
         _mintDebtTokens(mintAmount, sender);
@@ -162,11 +171,6 @@ contract EulerCurveMetaLeverager is ILeverager, Ownable {
         console.log("Deposit underlying: ", amount);
         shares = alchemist.depositUnderlying(yieldToken, amount, _sender, minAmountOut);
         emit DepositUnderlying(underlyingToken, amount, alchemist.convertSharesToUnderlyingTokens(yieldToken, shares));
-    }
-
-    function _getDTokenAddress() internal view returns (address dTokenAddress) {
-        Markets markets = Markets(flashLoan);
-        dTokenAddress = markets.underlyingToDToken(underlyingToken);
     }
 
     /*  This is going to be a meaty calculation.

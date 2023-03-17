@@ -281,16 +281,19 @@ contract EulerCurveMetaLeverager is ILeverager, Ownable {
 
     //Just like with leverage we need to calculate whether we can withdraw without liquidating
     function withdrawUnderlying(uint amount, uint32 underlyingSlippageBasisPoints) external returns(uint withdrawnAmount) {
-        require(amount>0);
+        require(amount>0, "Amount must be greater than 0");
         uint withdrawCapacity = getWithdrawCapacity(msg.sender);
         console.log("withdraw capacity: ", withdrawCapacity);
-        if(amount<withdrawCapacity) {
+        if(amount <= withdrawCapacity) {
             console.log("simple withdraw");
             withdrawnAmount = _withdrawUnderlying(amount, underlyingSlippageBasisPoints, msg.sender);
         } else {
+            uint liquidationCapacity = getRedeemableBalance(msg.sender);
+            require(liquidationCapacity >= amount, "Insufficient withdraw capacity");
             require(false, "Not yet implemented");
         }
     }
+
 
     function _withdrawUnderlying(uint amount, uint32 underlyingSlippageBasisPoints, address recipient) internal returns(uint withdrawnAmount) {
         IAlchemistV2 alchemist = IAlchemistV2(debtSource);
@@ -314,7 +317,7 @@ contract EulerCurveMetaLeverager is ILeverager, Ownable {
         return;
     }
 
-    fallback() external payable {
+    receive() external payable {
         IWETH(weth).deposit{value: msg.value}();
         console.log("WETH deposited");
         console.log(msg.value);
