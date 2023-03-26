@@ -142,14 +142,14 @@ contract EulerCurveMetaLeveragerTest is Test {
     function testVaultCapacityFullLeverage() public {
         setVaultCapacity(wstETHAddress, 0);
         vm.expectRevert("Vault is full");
-        leverager.leverage(10, 100, 100);
+        leverager.leverageAtomic(10, 100, 100);
     }
 
     function testDepositPoolGreaterThanVaultCapacityLeverage() public {
         wETH.deposit{value:10 ether}();
         wETH.approve(address(leverager), wETH.balanceOf(address(this)));
         setVaultCapacity(wstETHAddress, 8 ether);
-        leverager.leverage(10 ether, 100, 100);
+        leverager.leverageAtomic(10 ether, 100, 100);
 
         uint depositBalance = leverager.getDepositedBalance(address(this));
         console.log("final deposit balance");
@@ -162,7 +162,7 @@ contract EulerCurveMetaLeveragerTest is Test {
         wETH.approve(address(leverager), wETH.balanceOf(address(this)));
         setVaultCapacity(wstETHAddress, 12 ether);
         alchemist.approveMint(address(leverager), 10 ether);
-        leverager.leverage(10 ether, 100, 1000);
+        leverager.leverageAtomic(10 ether, 100, 1000);
 
         uint depositBalance = leverager.getDepositedBalance(address(this));
         console.log("final deposit balance: ", depositBalance);
@@ -180,7 +180,7 @@ contract EulerCurveMetaLeveragerTest is Test {
         setVaultCapacity(wstETHAddress, 30 ether);
 
         alchemist.approveMint(address(leverager), wETHinitialDeposit*10000000);
-        leverager.leverage(wETHinitialDeposit, 100, 400);
+        leverager.leverageAtomic(wETHinitialDeposit, 100, 400);
         
         uint depositBalance = leverager.getDepositedBalance(address(this));
         console.log("final deposit balance: ", depositBalance);
@@ -205,7 +205,7 @@ contract EulerCurveMetaLeveragerTest is Test {
         alchemist.approveMint(address(leverager), wETHinitialDeposit*10000000);
         uint preLeverageDepositBalance = leverager.getDepositedBalance(address(this));
         int256 preLeverageDebtBalance = leverager.getDebtBalance(address(this));
-        leverager.leverage(wETHinitialDeposit, 100, 300);
+        leverager.leverageAtomic(wETHinitialDeposit, 100, 300);
         
         uint postLeverageDepositBalance = leverager.getDepositedBalance(address(this));
         console.log("final deposit balance: ", postLeverageDepositBalance);
@@ -231,7 +231,7 @@ contract EulerCurveMetaLeveragerTest is Test {
         uint freeShares = leverager.getFreeWithdrawCapacity(address(this));
         console.log("freeShares: ", freeShares);
         alchemist.approveWithdraw(address(leverager), wstETHAddress, 10 ether);//last parameter denominated in shares
-        leverager.withdrawUnderlying(freeShares, 100, 10);
+        leverager.withdrawUnderlyingAtomic(freeShares, 100, 10);
         uint withdrawnFunds = wETH.balanceOf(address(this));
         require(withdrawnFunds>=7 ether,"Insufficient withdraw");
     }
@@ -242,7 +242,7 @@ contract EulerCurveMetaLeveragerTest is Test {
         borrowAlETH(4 ether);
         uint totalShares = leverager.getTotalWithdrawCapacity(address(this));
         alchemist.approveWithdraw(address(leverager), wstETHAddress, 10 ether);//last parameter denominated in shares
-        leverager.withdrawUnderlying(totalShares, 300, 10);
+        leverager.withdrawUnderlyingAtomic(totalShares, 300, 10);
         uint withdrawnFunds = wETH.balanceOf(address(this));
         //we also still have 4 ETH sitting around.
         require(withdrawnFunds>=5 ether,"Insufficient withdraw");

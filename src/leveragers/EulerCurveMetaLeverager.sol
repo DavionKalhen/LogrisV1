@@ -106,6 +106,11 @@ contract EulerCurveMetaLeverager is ILeverager, Ownable {
         shares = totalShares - debtShares;
     }
 
+    //returns Alchemix shares
+    function convertUnderlyingTokensToShares(uint256 amount) external view returns (uint shares) {
+        shares = alchemist.convertUnderlyingTokensToShares(yieldToken, amount);
+    }
+
     /*  This is going to be a meaty calculation.
         All we are using to repay the flashloan is the exchanged debt
         We can always flash loan more than we need but the idea is to deposit everything we flash loan
@@ -200,7 +205,7 @@ contract EulerCurveMetaLeverager is ILeverager, Ownable {
         therefore Y*sharesPerUnderlying/collateralization = flashLoanAmount*debtTradeLoss
         flashLoanAmount=Y*sharesPerUnderlying/(collateralization*debtTradeLoss)
     */
-    function getWithdrawParameters(uint shares, uint32 underlyingSlippageBasisPoints, uint32 debtSlippageBasisPoints) public view returns(uint flashLoanAmount, uint burnAmount, uint debtTradeMin, uint minUnderlyingOut) {
+    function getWithdrawUnderlyingParameters(uint shares, uint32 underlyingSlippageBasisPoints, uint32 debtSlippageBasisPoints) public view returns(uint flashLoanAmount, uint burnAmount, uint debtTradeMin, uint minUnderlyingOut) {
         uint freeShares = getFreeWithdrawCapacity(msg.sender);
         if(shares<=freeShares) {
             console.log("simple withdraw");
@@ -218,12 +223,17 @@ contract EulerCurveMetaLeverager is ILeverager, Ownable {
 
     /// @dev Fills up as much vault capacity as possible using leverage.
     ///
+    /// This method is convenient and unlikely to revert but is vulnerable to sandwich attacks.
     /// @param depositAmount Max amount of underlying token to use as the base deposit
     /// @param underlyingSlippageBasisPoints Slippage tolerance when trading underlying to yield token. Must include basis points for peg deviations.
     /// @param debtSlippageBasisPoints Slippage tolerance when trading debt to underlying token. Does not account for debt peg deviations.
     ///
-    function leverage(uint depositAmount, uint32 underlyingSlippageBasisPoints, uint32 debtSlippageBasisPoints) external {
+    function leverageAtomic(uint depositAmount, uint32 underlyingSlippageBasisPoints, uint32 debtSlippageBasisPoints) external {
         (uint clampedDeposit, uint flashLoanAmount, uint underlyingDepositMin, uint mintAmount, uint debtTradeMin) = getLeverageParameters(depositAmount, underlyingSlippageBasisPoints, debtSlippageBasisPoints);
+        leverage(clampedDeposit, flashLoanAmount, underlyingDepositMin, mintAmount, debtTradeMin);
+    }
+
+    function leverage(uint clampedDeposit, uint flashLoanAmount, uint underlyingDepositMin, uint mintAmount, uint debtTradeMin) public {
         require(clampedDeposit > 0, "Vault is full");
         TransferHelper.safeTransferFrom(underlyingToken, msg.sender, address(this), clampedDeposit);
 
@@ -326,10 +336,15 @@ contract EulerCurveMetaLeverager is ILeverager, Ownable {
         return amountIn * (10000+slippageBasisPoints) / 10000;
     }
 
-    function withdrawUnderlying(uint shares, uint32 underlyingSlippageBasisPoints, uint32 debtSlippageBasisPoints) external {
+    // This method is convenient and unlikely to revert but is vulnerable to sandwich attacks.
+    function withdrawUnderlyingAtomic(uint shares, uint32 underlyingSlippageBasisPoints, uint32 debtSlippageBasisPoints) external {
+        (uint flashLoanAmount, uint burnAmount, uint debtTradeMin, uint minUnderlyingOut) = getWithdrawUnderlyingParameters(shares, underlyingSlippageBasisPoints, debtSlippageBasisPoints);
+        withdrawUnderlying(shares, flashLoanAmount, burnAmount, debtTradeMin, minUnderlyingOut);
+    }
+
+    function withdrawUnderlying(uint shares, uint flashLoanAmount, uint burnAmount, uint debtTradeMin, uint minUnderlyingOut) public {
         require(shares>0, "must include shares to withdraw");
         require(shares<=getTotalWithdrawCapacity(msg.sender), "shares exceeds capacity");
-        (uint flashLoanAmount, uint burnAmount, uint debtTradeMin, uint minUnderlyingOut) = getWithdrawParameters(shares, underlyingSlippageBasisPoints, debtSlippageBasisPoints);
         if(burnAmount==0) {
             alchemist.withdrawUnderlyingFrom(msg.sender, yieldToken, shares, msg.sender, minUnderlyingOut);
         } else {

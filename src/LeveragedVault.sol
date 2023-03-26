@@ -68,45 +68,41 @@ contract LeveragedVault is Ownable, ERC4626, ILeveragedVault {
         return underlyingToken.balanceOf(address(this)) + leverager.getRedeemableBalance(address(this));
     }
 
-    function convertUnderlyingTokensToShares(uint256 amount) public view returns (uint256 shares) {
+    function getLeverageParameters() external view returns(uint clampedDeposit, uint flashLoanAmount, uint underlyingDepositMin, uint mintAmount, uint debtTradeMin) {
+        (clampedDeposit, flashLoanAmount, underlyingDepositMin, mintAmount, debtTradeMin) = leverager.getLeverageParameters(underlyingToken.balanceOf(address(this)), underlyingSlippageBasisPoints, debtSlippageBasisPoints);
+    }
+
+    function getWithdrawUnderlyingParameters(uint leveragerShares) external view returns(uint flashLoanAmount, uint burnAmount, uint debtTradeMin, uint minUnderlyingOut) {
+        (flashLoanAmount, burnAmount, debtTradeMin, minUnderlyingOut) = leverager.getWithdrawUnderlyingParameters(leveragerShares, underlyingSlippageBasisPoints, debtSlippageBasisPoints);
+    }
+
+    function convertUnderlyingTokensToShares(uint256 amount) public view returns (uint256 leveragedVaultShares) {
         return amount * totalSupply() / getVaultRedeemableBalance();
     }
 
-    function convertSharesToUnderlyingTokens(uint256 shares) public view returns (uint256) {
+    function convertSharesToUnderlyingTokens(uint256 leveragedVaultShares) public view returns (uint256) {
         console.log(totalSupply());
-        return shares * getVaultRedeemableBalance() / totalSupply();
+        return leveragedVaultShares * getVaultRedeemableBalance() / totalSupply();
     }
 
-    function depositUnderlying(uint amount) external returns(uint shares) {
+    function depositUnderlying(uint amount) external returns(uint leveragedVaultShares) {
         require(amount <= maxDeposit(msg.sender), "ERC4626: deposit more than max");
         
-        shares = previewDeposit(amount);    
-        _deposit(msg.sender, msg.sender, amount, shares);
+        leveragedVaultShares = previewDeposit(amount);    
+        _deposit(msg.sender, msg.sender, amount, leveragedVaultShares);
         emit DepositUnderlying(msg.sender, address(underlyingToken), amount);
     }
 
-    function depositUnderlying() external payable returns(uint shares){
+    function depositUnderlying() external payable returns(uint leveragedVaultShares){
         require(msg.value <= maxDeposit(msg.sender), "ERC4626: deposit more than max");
         require(address(underlyingToken) == address(wETH), "ERC4626: depositing ETH to non-wETH vault");
         wETH.deposit{value:msg.value}();
-        shares = previewDeposit(msg.value);
-        _depositETH(msg.sender, msg.sender, msg.value, shares);
+        leveragedVaultShares = previewDeposit(msg.value);
+        _depositETH(msg.sender, msg.sender, msg.value, leveragedVaultShares);
         emit DepositUnderlying(msg.sender, address(underlyingToken), msg.value);
     }
 
-    function withdrawUnderlying(uint256 shares) external virtual override returns (uint256 amount) {
-        require(shares <= balanceOf(msg.sender), "You don't have enough deposited");
-        uint underlyingWithdrawAmount = convertSharesToUnderlyingTokens(shares);
-        uint depositPoolBalance = underlyingToken.balanceOf(address(this));
-        if(depositPoolBalance < underlyingWithdrawAmount) {
-            leverager.withdrawUnderlying(underlyingWithdrawAmount-depositPoolBalance, underlyingSlippageBasisPoints, debtSlippageBasisPoints);
-        }
-        _withdraw(msg.sender, msg.sender, msg.sender, shares, underlyingWithdrawAmount);
-        emit WithdrawUnderlying(msg.sender, address(underlyingToken), amount);
-        return underlyingWithdrawAmount;
-    }
-
-    function leverage() external {
+    function leverage(uint clampedDeposit, uint flashLoanAmount, uint underlyingDepositMin, uint mintAmount, uint debtTradeMin) external {
         uint256 depositAmount = underlyingToken.balanceOf(address(this));
         int256 debtBefore = leverager.getDebtBalance(address(this));
         IAlchemistV2 alchemist = IAlchemistV2(debtSource);
@@ -114,8 +110,24 @@ contract LeveragedVault is Ownable, ERC4626, ILeveragedVault {
         alchemist.approveMint(address(leverager), depositAmount);      
 
         wETH.approve(address(leverager), depositAmount);
-        leverager.leverage(depositAmount, underlyingSlippageBasisPoints, debtSlippageBasisPoints);
+        leverager.leverage(clampedDeposit, flashLoanAmount, underlyingDepositMin, mintAmount, debtTradeMin);
+        //TODO: sanity check the amount actually deposited to protect against a malicious leverager contract here
         emit Leverage(address(underlyingToken), depositAmount, leverager.getDebtBalance(address(this)) - debtBefore);
+    }
+
+    function withdrawUnderlying(uint leveragedVaultShares, uint flashLoanAmount, uint burnAmount, uint debtTradeMin, uint minUnderlyingOut) external virtual returns (uint256 amount) {
+        require(leveragedVaultShares <= balanceOf(msg.sender), "You don't have enough deposited");
+        // I'm skeptical you'll ever have underlyingWithdrawAmount after accounting for slippage
+        uint underlyingWithdrawAmount = convertSharesToUnderlyingTokens(leveragedVaultShares);
+        uint depositPoolBalance = underlyingToken.balanceOf(address(this));
+        if(depositPoolBalance < underlyingWithdrawAmount) {
+            uint leveragerShares = leverager.convertUnderlyingTokensToShares(underlyingWithdrawAmount-depositPoolBalance);
+            leverager.withdrawUnderlying(leveragerShares, flashLoanAmount, burnAmount, debtTradeMin, minUnderlyingOut);
+        }
+        //TODO: sanity check the amount actually withdrawn to protect against a malicious leverager contract here
+        _withdraw(msg.sender, msg.sender, msg.sender, leveragedVaultShares, underlyingWithdrawAmount);
+        emit WithdrawUnderlying(msg.sender, address(underlyingToken), amount);
+        return underlyingWithdrawAmount;
     }
 
     function totalAssets() public view virtual override(ERC4626, IERC4626) returns (uint256) {
