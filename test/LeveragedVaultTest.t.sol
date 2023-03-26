@@ -138,7 +138,8 @@ contract LeveragedVaultTest is Test {
         initLeveragedVault();
         vm.startPrank(user1);
         leveragedVault.depositUnderlying{value: 10 ether}();
-        leveragedVault.leverage();
+        (uint clampedDeposit, uint flashLoanAmount, uint underlyingDepositMin, uint mintAmount, uint debtTradeMin) = leveragedVault.getLeverageParameters();
+        leveragedVault.leverage(clampedDeposit, flashLoanAmount, underlyingDepositMin, mintAmount, debtTradeMin);
         uint256 userBalance = leveragedVault.balanceOf(user1);
         uint supply = leveragedVault.totalSupply();
         console.log("Supply: ", supply);
@@ -151,10 +152,12 @@ contract LeveragedVaultTest is Test {
         initLeveragedVault();
         vm.prank(user1);
         leveragedVault.depositUnderlying{value: 10 ether}();
-        leveragedVault.leverage();
+        (uint clampedDeposit, uint flashLoanAmount, uint underlyingDepositMin, uint mintAmount, uint debtTradeMin) = leveragedVault.getLeverageParameters();
+        leveragedVault.leverage(clampedDeposit, flashLoanAmount, underlyingDepositMin, mintAmount, debtTradeMin);
         vm.prank(vm.addr(2));
         leveragedVault.depositUnderlying{value: 10 ether}();
-        leveragedVault.leverage();
+        (clampedDeposit, flashLoanAmount, underlyingDepositMin, mintAmount, debtTradeMin) = leveragedVault.getLeverageParameters();
+        leveragedVault.leverage(clampedDeposit, flashLoanAmount, underlyingDepositMin, mintAmount, debtTradeMin);
         vm.deal(vm.addr(3), 200 ether);
         vm.prank(vm.addr(3));
         leveragedVault.depositUnderlying{value: 10 ether}();
@@ -180,24 +183,26 @@ contract LeveragedVaultTest is Test {
         uint256 worth = leveragedVault.getVaultDepositedBalance() + leveragedVault.getDepositPoolBalance();
         assertGt(worth, 20 ether);
         assertLt(userBalance, user2Balance);
-        
     }
 
     function testETHDepositToValutWithFourUsersAndLeverager() public {
         initLeveragedVault();
         vm.prank(user1);
         leveragedVault.depositUnderlying{value: 10 ether}();
-        leveragedVault.leverage();
+        (uint clampedDeposit, uint flashLoanAmount, uint underlyingDepositMin, uint mintAmount, uint debtTradeMin) = leveragedVault.getLeverageParameters();
+        leveragedVault.leverage(clampedDeposit, flashLoanAmount, underlyingDepositMin, mintAmount, debtTradeMin);
         vm.prank(vm.addr(2));
         leveragedVault.depositUnderlying{value: 10 ether}();
-        leveragedVault.leverage();
+        (clampedDeposit, flashLoanAmount, underlyingDepositMin, mintAmount, debtTradeMin) = leveragedVault.getLeverageParameters();
+        leveragedVault.leverage(clampedDeposit, flashLoanAmount, underlyingDepositMin, mintAmount, debtTradeMin);
         vm.deal(vm.addr(3), 200 ether);
         vm.prank(vm.addr(3));
         leveragedVault.depositUnderlying{value: 10 ether}();
         vm.deal(vm.addr(4), 200 ether);
         vm.prank(vm.addr(4));
         leveragedVault.depositUnderlying{value: 10 ether}();
-        leveragedVault.leverage();
+        (clampedDeposit, flashLoanAmount, underlyingDepositMin, mintAmount, debtTradeMin) = leveragedVault.getLeverageParameters();
+        leveragedVault.leverage(clampedDeposit, flashLoanAmount, underlyingDepositMin, mintAmount, debtTradeMin);
         uint256 redeemable = leveragedVault.getVaultRedeemableBalance();
         uint256 withdrawCap = leverager.getFreeWithdrawCapacity(address(leveragedVault));
         uint256 totalAssets = leveragedVault.totalAssets();
@@ -224,7 +229,6 @@ contract LeveragedVaultTest is Test {
         uint256 worth = leveragedVault.getVaultDepositedBalance() + leveragedVault.getDepositPoolBalance();
         assertGt(worth, 20 ether);
         assertLt(userBalance, user2Balance);
-        
     }    
     // function testLeverageCall() public {
     //     leveragedVaultFactory.createVault(address(dai), daiVaultAddress);
