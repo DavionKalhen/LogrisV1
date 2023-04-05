@@ -1,11 +1,9 @@
 pragma solidity 0.8.19;
 
-import "./euler/IFlashLoan.sol";
-
-interface ILeverager is IFlashLoan {
+interface ILeverager {
     event DepositUnderlying(address indexed underlyingToken, uint256 sent, uint256 credited);
     event Mint(address indexed yieldToken, uint256 amount);
-    event Swap(address debtToken, address underlyingToken, uint256 debtAmount, uint256 underlyingAmount);
+    event Swap(address sourceToken, address destToken, uint256 sourceAmount, uint256 destAmount);
     event Burn(address debtToken, uint amount);
     event WithdrawUnderlying(address indexed underlyingToken, uint256 shares, uint256 underlying);
 
