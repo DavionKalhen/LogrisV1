@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 pragma solidity 0.8.19;
 
 interface ILeverager {
@@ -10,6 +12,7 @@ interface ILeverager {
     function getDepositedBalance(address depositor) external view returns(uint amount);
     function getDebtBalance(address depositor) external view returns(int256 amount);
     function getRedeemableBalance(address depositor) external view returns(uint amount);
+    function getDepositCapacity() external view returns(uint amount);
     function getBorrowCapacity(address depositor) external view returns(uint amount);
     function getFreeWithdrawCapacity(address _depositor) external view returns(uint shares);
     function getTotalWithdrawCapacity(address _depositor) external view returns(uint shares);

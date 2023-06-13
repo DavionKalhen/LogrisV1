@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT
 pragma solidity 0.8.19;
 
 import "../interfaces/ILeverager.sol";
@@ -28,7 +29,13 @@ contract EulerCurveMetaLeverager is ILeverager, Ownable {
     address constant weth = 0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2;
     uint256 constant FIXED_POINT_SCALAR = 1e18;
 
-    constructor(address _yieldToken, address _underlyingToken, address _debtToken, address _flashLoan, address _flashLoanSender, address _debtSource, address _dex) {
+    constructor(address _yieldToken,
+                address _underlyingToken,
+                address _debtToken,
+                address _flashLoan,
+                address _flashLoanSender,
+                address _debtSource,
+                address _dex) {
         yieldToken = _yieldToken;
         underlyingToken = _underlyingToken;
         debtToken = _debtToken;
@@ -40,32 +47,33 @@ contract EulerCurveMetaLeverager is ILeverager, Ownable {
     }
 
     //return amount denominated in underlying tokens
-    function getDepositedBalance(address _depositor) public view returns(uint amount) {
+    function getDepositedBalance(address _depositor) public view override returns(uint amount) {
         //last accrued weight appears to be unrealized borrowCapacity denominated in debt tokens
         (uint256 shares,) = alchemist.positions(_depositor, yieldToken);
         amount = alchemist.convertSharesToUnderlyingTokens(yieldToken, shares);
     }
 
     //return amount denominated in debt tokens
-    function getDebtBalance(address _depositor) public view returns(int256 amount) {
+    function getDebtBalance(address _depositor) public view override returns(int256 amount) {
         (amount,) = alchemist.accounts(_depositor);
     }
 
     //return amount denominated in underlying tokens
-    function getRedeemableBalance(address _depositor) public view returns(uint amount) {
+    function getRedeemableBalance(address _depositor) public view override returns(uint amount) {
         uint depositBalance = getDepositedBalance(_depositor);     
         int256 debtBalance = getDebtBalance(_depositor);
-        if(debtBalance>=0) {
+        if(debtBalance >= 0) {
             uint256 underlyingDebt = alchemist.normalizeDebtTokensToUnderlying(underlyingToken, uint(debtBalance));
             return depositBalance - underlyingDebt;
         } else {
-            uint256 underlyingCredit = alchemist.normalizeDebtTokensToUnderlying(underlyingToken, uint(-1*debtBalance));
+            uint256 underlyingCredit = alchemist.normalizeDebtTokensToUnderlying(underlyingToken,
+                                                                                 uint(-1 * debtBalance));
             return depositBalance + underlyingCredit;
         }
     }
 
     //return amount denominated in underlying tokens
-    function getDepositCapacity() public view returns(uint amount) {
+    function getDepositCapacity() public view override returns(uint amount) {
         IAlchemistV2.YieldTokenParams memory params = alchemist.getYieldTokenParameters(yieldToken);
         if(params.maximumExpectedValue >= params.expectedValue)
             amount = params.maximumExpectedValue - params.expectedValue;
@@ -74,40 +82,42 @@ contract EulerCurveMetaLeverager is ILeverager, Ownable {
     }
 
     //return amount denominated in debt tokens
-    function getBorrowCapacity(address _depositor) public view returns(uint amount) {
+    function getBorrowCapacity(address _depositor) public view override returns(uint amount) {
         uint256 minimumCollateralization = alchemist.minimumCollateralization();//includes 1e18
         uint depositBalance = getDepositedBalance(_depositor);     
         int256 debtBalance = getDebtBalance(_depositor);
-        uint debtAdjustedBalance=0;
-        if(debtBalance>=0) {
+        uint debtAdjustedBalance = 0;
+        if(debtBalance >= 0) {
             uint256 underlyingDebt = alchemist.normalizeDebtTokensToUnderlying(underlyingToken, uint(debtBalance));
             debtAdjustedBalance = depositBalance - (underlyingDebt * minimumCollateralization / FIXED_POINT_SCALAR);
         } else {
-            uint256 underlyingCredit = alchemist.normalizeDebtTokensToUnderlying(underlyingToken, uint(-1*debtBalance));
+            uint256 underlyingCredit = alchemist.normalizeDebtTokensToUnderlying(underlyingToken,
+                                                                                 uint(-1 * debtBalance));
             debtAdjustedBalance = depositBalance + (underlyingCredit * minimumCollateralization / FIXED_POINT_SCALAR);
         }
         amount = debtAdjustedBalance * FIXED_POINT_SCALAR / minimumCollateralization;
     }
 
-    function getTotalWithdrawCapacity(address _depositor) public view returns (uint shares) {
+    function getTotalWithdrawCapacity(address _depositor) public view override returns (uint shares) {
         (shares,) = alchemist.positions(_depositor, yieldToken);
         return shares;
     }
 
     //gets the withdraw capacity of the vault without liquidation
-    function getFreeWithdrawCapacity(address _depositor) public view returns(uint shares) {
+    function getFreeWithdrawCapacity(address _depositor) public view override returns(uint shares) {
         uint256 minimumCollateralization = alchemist.minimumCollateralization();//includes 1e18
 
         (uint256 totalShares,) = alchemist.positions(_depositor, yieldToken);
         int256 debtBalance = getDebtBalance(_depositor);
         uint clampedDebt = (debtBalance<=0) ? 0: uint(debtBalance);
-        uint debtShares = alchemist.normalizeDebtTokensToUnderlying(underlyingToken, clampedDebt) * minimumCollateralization / FIXED_POINT_SCALAR;
+        uint debtShares = alchemist.normalizeDebtTokensToUnderlying(underlyingToken, clampedDebt)
+                          * minimumCollateralization / FIXED_POINT_SCALAR;
 
         shares = totalShares - debtShares;
     }
 
     //returns Alchemix shares
-    function convertUnderlyingTokensToShares(uint256 amount) external view returns (uint shares) {
+    function convertUnderlyingTokensToShares(uint256 amount) external view override returns (uint shares) {
         shares = alchemist.convertUnderlyingTokensToShares(yieldToken, amount);
     }
 
@@ -160,27 +170,42 @@ contract EulerCurveMetaLeverager is ILeverager, Ownable {
         mintAmount = (minDepositUnderlyingAmount/2)+borrowCapacity
         minDebtTradeAmount = mintAmount*debtToUnderlyingRatio*debtSlippage
     */
-    function getLeverageParameters(uint depositAmount, uint32 underlyingSlippageBasisPoints, uint32 debtSlippageBasisPoints) public view returns(uint clampedDeposit, uint flashLoanAmount, uint underlyingDepositMin, uint mintAmount, uint debtTradeMin) {
+    function getLeverageParameters(uint depositAmount,
+                                   uint32 underlyingSlippageBasisPoints,
+                                   uint32 debtSlippageBasisPoints) public view override returns(uint clampedDeposit,
+                                                                                       uint flashLoanAmount,
+                                                                                       uint underlyingDepositMin,
+                                                                                       uint mintAmount,
+                                                                                       uint debtTradeMin) {
         uint depositCapacity = getDepositCapacity();
         if(depositCapacity <= depositAmount) {
             clampedDeposit = depositCapacity;
-            underlyingDepositMin = _basisPointAdjustment(alchemist.convertUnderlyingTokensToYield(yieldToken, clampedDeposit), underlyingSlippageBasisPoints);
+            underlyingDepositMin = _basisPointAdjustment(
+                alchemist.convertUnderlyingTokensToYield(yieldToken, clampedDeposit),
+                underlyingSlippageBasisPoints);
         }
         else {
             clampedDeposit = depositAmount;
             uint borrowCapacity = getBorrowCapacity(msg.sender);
             console.log("borrowCapacity:", borrowCapacity);
-            flashLoanAmount = _calculateFlashLoanAmount(depositAmount, underlyingSlippageBasisPoints, debtSlippageBasisPoints, borrowCapacity, alchemist.minimumCollateralization());
+            flashLoanAmount = _calculateFlashLoanAmount(depositAmount,
+                                                        underlyingSlippageBasisPoints,
+                                                        debtSlippageBasisPoints,
+                                                        borrowCapacity,
+                                                        alchemist.minimumCollateralization());
             console.log("flashLoanAmount: ", flashLoanAmount);
-            if(depositAmount+flashLoanAmount>depositCapacity) {
-                flashLoanAmount = depositCapacity-depositAmount;
+            if(depositAmount + flashLoanAmount > depositCapacity) {
+                flashLoanAmount = depositCapacity - depositAmount;
             }
             //denominated in yield
-            underlyingDepositMin = _basisPointAdjustment(alchemist.convertUnderlyingTokensToYield(yieldToken, depositAmount+flashLoanAmount), underlyingSlippageBasisPoints);
+            underlyingDepositMin = _basisPointAdjustment(
+                alchemist.convertUnderlyingTokensToYield(yieldToken, depositAmount + flashLoanAmount),
+                                                         underlyingSlippageBasisPoints);
             console.log("underlying deposit min (in yield): ", underlyingDepositMin);
-            mintAmount = borrowCapacity + (alchemist.convertYieldTokensToUnderlying(yieldToken, underlyingDepositMin) * FIXED_POINT_SCALAR / alchemist.minimumCollateralization());
+            mintAmount = borrowCapacity + (alchemist.convertYieldTokensToUnderlying(yieldToken, underlyingDepositMin)
+                                           * FIXED_POINT_SCALAR / alchemist.minimumCollateralization());
             console.log("mint amount:", mintAmount);
-            debtTradeMin =_basisPointAdjustment(mintAmount, debtSlippageBasisPoints);
+            debtTradeMin = _basisPointAdjustment(mintAmount, debtSlippageBasisPoints);
         }
     }
 
@@ -205,19 +230,23 @@ contract EulerCurveMetaLeverager is ILeverager, Ownable {
         therefore Y*sharesPerUnderlying/collateralization = flashLoanAmount*debtTradeLoss
         flashLoanAmount=Y*sharesPerUnderlying/(collateralization*debtTradeLoss)
     */
-    function getWithdrawUnderlyingParameters(uint shares, uint32 underlyingSlippageBasisPoints, uint32 debtSlippageBasisPoints) public view returns(uint flashLoanAmount, uint burnAmount, uint debtTradeMin, uint minUnderlyingOut) {
+    function getWithdrawUnderlyingParameters(uint shares,
+                                             uint32 underlyingSlippageBasisPoints,
+                                             uint32 debtSlippageBasisPoints) public view override
+    returns(uint flashLoanAmount, uint burnAmount, uint debtTradeMin, uint minUnderlyingOut) {
         uint freeShares = getFreeWithdrawCapacity(msg.sender);
-        if(shares<=freeShares) {
+        if(shares <= freeShares) {
             console.log("simple withdraw");
             minUnderlyingOut = _basisPointAdjustment(shares, underlyingSlippageBasisPoints);
         } else {
-            uint remainingShares = shares-freeShares;
+            uint remainingShares = shares - freeShares;
             uint debtTradeLoss =  _basisPointAdjustment(1 ether, debtSlippageBasisPoints);
 
-            flashLoanAmount=alchemist.convertSharesToUnderlyingTokens(yieldToken, remainingShares)*1e36/(alchemist.minimumCollateralization()*debtTradeLoss);
+            flashLoanAmount = alchemist.convertSharesToUnderlyingTokens(yieldToken, remainingShares)
+                              * 1e36 / (alchemist.minimumCollateralization() * debtTradeLoss);
             burnAmount = _basisPointAdjustment(flashLoanAmount, debtSlippageBasisPoints);
             debtTradeMin = burnAmount;
-            minUnderlyingOut = _basisPointAdjustment(flashLoanAmount-burnAmount, underlyingSlippageBasisPoints);
+            minUnderlyingOut = _basisPointAdjustment(flashLoanAmount - burnAmount, underlyingSlippageBasisPoints);
         }
     }
 
@@ -228,12 +257,24 @@ contract EulerCurveMetaLeverager is ILeverager, Ownable {
     /// @param underlyingSlippageBasisPoints Slippage tolerance when trading underlying to yield token. Must include basis points for peg deviations.
     /// @param debtSlippageBasisPoints Slippage tolerance when trading debt to underlying token. Does not account for debt peg deviations.
     ///
-    function leverageAtomic(uint depositAmount, uint32 underlyingSlippageBasisPoints, uint32 debtSlippageBasisPoints) external {
-        (uint clampedDeposit, uint flashLoanAmount, uint underlyingDepositMin, uint mintAmount, uint debtTradeMin) = getLeverageParameters(depositAmount, underlyingSlippageBasisPoints, debtSlippageBasisPoints);
+    function leverageAtomic(uint depositAmount,
+                            uint32 underlyingSlippageBasisPoints,
+                            uint32 debtSlippageBasisPoints) external override {
+        (uint clampedDeposit,
+         uint flashLoanAmount,
+         uint underlyingDepositMin,
+         uint mintAmount,
+         uint debtTradeMin) = getLeverageParameters(depositAmount,
+                                                    underlyingSlippageBasisPoints,
+                                                    debtSlippageBasisPoints);
         leverage(clampedDeposit, flashLoanAmount, underlyingDepositMin, mintAmount, debtTradeMin);
     }
 
-    function leverage(uint clampedDeposit, uint flashLoanAmount, uint underlyingDepositMin, uint mintAmount, uint debtTradeMin) public {
+    function leverage(uint clampedDeposit,
+                      uint flashLoanAmount,
+                      uint underlyingDepositMin,
+                      uint mintAmount,
+                      uint debtTradeMin) public override {
         require(clampedDeposit > 0, "Vault is full");
         TransferHelper.safeTransferFrom(underlyingToken, msg.sender, address(this), clampedDeposit);
 
@@ -243,7 +284,14 @@ contract EulerCurveMetaLeverager is ILeverager, Ownable {
         } else {
             address dTokenAddress = _getDTokenAddress();
             DToken dToken = DToken(dTokenAddress);
-            bytes memory data = abi.encode(msg.sender, flashLoanSender, true, clampedDeposit, flashLoanAmount, underlyingDepositMin, mintAmount, debtTradeMin);
+            bytes memory data = abi.encode(msg.sender,
+                                           flashLoanSender,
+                                           true,
+                                           clampedDeposit,
+                                           flashLoanAmount,
+                                           underlyingDepositMin,
+                                           mintAmount,
+                                           debtTradeMin);
             dToken.flashLoan(flashLoanAmount, data);
         }
         //the dust should get transmitted back to msg.sender but it might not be worth the gas...
@@ -252,13 +300,20 @@ contract EulerCurveMetaLeverager is ILeverager, Ownable {
     // so its really tricky having to have a contract receive the same callback signature with two different callback flows...
     // as luck would have it deposit and withdraw have the same number of parameters on their callback
     function onFlashLoan(bytes memory data) external {
-        (address sender, address flashLoanSender, bool depositFlag, uint param1, uint param2, uint param3, uint param4, uint param5) = abi.decode(data, (address, address, bool, uint, uint, uint, uint, uint));
+        (address sender,
+         address _flashLoanSender,
+         bool depositFlag,
+         uint param1,
+         uint param2,
+         uint param3,
+         uint param4,
+         uint param5) = abi.decode(data, (address, address, bool, uint, uint, uint, uint, uint));
         //We'd really like to find a way to flashloan while retaining msg.sender.
         //so that we don't need a mint allowance on alchemix to the leverager
         console.log("msg.sender:", msg.sender);
         console.log("sender:", sender);
-        console.log("flashLoanSender:", flashLoanSender);
-        require(msg.sender==flashLoanSender, "callback caller must be flashloan source");
+        console.log("flashLoanSender:", _flashLoanSender);
+        require(msg.sender == _flashLoanSender, "callback caller must be flashloan source");
         if(depositFlag) {
             _flashLoanDeposit(sender, param1, param2, param3, param4, param5);
         } else {
@@ -266,21 +321,32 @@ contract EulerCurveMetaLeverager is ILeverager, Ownable {
         }
     }
 
-    function _flashLoanDeposit(address sender, uint clampedDeposit, uint flashLoanAmount, uint underlyingDepositMin, uint mintAmount, uint debtTradeMin) internal {
+    function _flashLoanDeposit(address depositor,
+                               uint clampedDeposit,
+                               uint flashLoanAmount,
+                               uint underlyingDepositMin,
+                               uint mintAmount,
+                               uint debtTradeMin) internal {
         uint totalDeposit = clampedDeposit + flashLoanAmount;
-        _depositUnderlying(totalDeposit, underlyingDepositMin, sender);
-        _mintDebtTokens(mintAmount, sender);
+        _depositUnderlying(totalDeposit, underlyingDepositMin, depositor);
+        _mintDebtTokens(mintAmount, depositor);
         _swapDebtTokens(mintAmount, debtTradeMin);
         _repayFlashLoan(flashLoanAmount);
     }
 
-    function _calculateFlashLoanAmount(uint depositAmount, uint32 underlyingSlippageBasisPoints, uint32 debtSlippageBasisPoints, uint borrowCapacity, uint minimumCollateralization) internal pure returns (uint flashLoanAmount) {
+    function _calculateFlashLoanAmount(uint depositAmount,
+                                       uint32 underlyingSlippageBasisPoints,
+                                       uint32 debtSlippageBasisPoints,
+                                       uint borrowCapacity,
+                                       uint minimumCollateralization) internal pure returns (uint flashLoanAmount) {
         //normalizeDebt is returning 1:1 despite the alETH peg being .97
         //We would need to get the actual price per token from our curve factory.
         //I think we can just bundle the peg deviation with the slippage into debtSlippageBasisPoints for now.
         uint debtTradeLoss =  _basisPointAdjustment(1 ether, debtSlippageBasisPoints);
         uint totalTradeLoss = _basisPointAdjustment(debtTradeLoss, underlyingSlippageBasisPoints);
-        flashLoanAmount = ((totalTradeLoss*depositAmount)+(minimumCollateralization*debtTradeLoss*borrowCapacity/1e18))/(minimumCollateralization-totalTradeLoss);
+        flashLoanAmount = ((totalTradeLoss * depositAmount)
+                           + (minimumCollateralization * debtTradeLoss * borrowCapacity / 1e18))
+                           / (minimumCollateralization - totalTradeLoss);
     }
 
     function _getDTokenAddress() internal view returns (address dTokenAddress) {
@@ -325,43 +391,65 @@ contract EulerCurveMetaLeverager is ILeverager, Ownable {
     function _repayFlashLoan(uint amount) internal {
         TransferHelper.safeTransfer(underlyingToken, msg.sender, amount);
         console.log("Repaid: ", amount);
-        return;
     }
 
     function _basisPointAdjustment(uint256 amountIn, uint32 slippageBasisPoints) internal pure returns(uint256) {
-        return amountIn * (10000-slippageBasisPoints) / 10000;
+        return amountIn * (10000 - slippageBasisPoints) / 10000;
     }
 
     function _basisPointAdjustmentUp(uint256 amountIn, uint32 slippageBasisPoints) internal pure returns(uint256) {
-        return amountIn * (10000+slippageBasisPoints) / 10000;
+        return amountIn * (10000 + slippageBasisPoints) / 10000;
     }
 
     // This method is convenient and unlikely to revert but is vulnerable to sandwich attacks.
-    function withdrawUnderlyingAtomic(uint shares, uint32 underlyingSlippageBasisPoints, uint32 debtSlippageBasisPoints) external {
-        (uint flashLoanAmount, uint burnAmount, uint debtTradeMin, uint minUnderlyingOut) = getWithdrawUnderlyingParameters(shares, underlyingSlippageBasisPoints, debtSlippageBasisPoints);
+    function withdrawUnderlyingAtomic(uint shares,
+                                      uint32 underlyingSlippageBasisPoints,
+                                      uint32 debtSlippageBasisPoints) external override {
+        (uint flashLoanAmount,
+         uint burnAmount,
+         uint debtTradeMin,
+         uint minUnderlyingOut) = getWithdrawUnderlyingParameters(shares,
+                                                                  underlyingSlippageBasisPoints,
+                                                                  debtSlippageBasisPoints);
         withdrawUnderlying(shares, flashLoanAmount, burnAmount, debtTradeMin, minUnderlyingOut);
     }
 
-    function withdrawUnderlying(uint shares, uint flashLoanAmount, uint burnAmount, uint debtTradeMin, uint minUnderlyingOut) public {
-        require(shares>0, "must include shares to withdraw");
-        require(shares<=getTotalWithdrawCapacity(msg.sender), "shares exceeds capacity");
-        if(burnAmount==0) {
+    function withdrawUnderlying(uint shares,
+                                uint flashLoanAmount,
+                                uint burnAmount,
+                                uint debtTradeMin,
+                                uint minUnderlyingOut) public override {
+        require(shares > 0, "must include shares to withdraw");
+        require(shares <= getTotalWithdrawCapacity(msg.sender), "shares exceeds capacity");
+        if(burnAmount == 0) {
             alchemist.withdrawUnderlyingFrom(msg.sender, yieldToken, shares, msg.sender, minUnderlyingOut);
         } else {
             address dTokenAddress = _getDTokenAddress();
             DToken dToken = DToken(dTokenAddress);
-            bytes memory data = abi.encode(msg.sender, flashLoanSender, false, shares, flashLoanAmount, burnAmount, debtTradeMin, minUnderlyingOut);
+            bytes memory data = abi.encode(msg.sender,
+                                           flashLoanSender,
+                                           false,
+                                           shares,
+                                           flashLoanAmount,
+                                           burnAmount,
+                                           debtTradeMin,
+                                           minUnderlyingOut);
             dToken.flashLoan(flashLoanAmount, data);
         }
     }
 
-    function _flashLoanWithdraw(address sender, uint shares, uint flashLoanAmount, uint burnAmount, uint debtTradeMin, uint minUnderlyingOut) internal {
+    function _flashLoanWithdraw(address depositor,
+                                uint shares,
+                                uint flashLoanAmount,
+                                uint burnAmount,
+                                uint debtTradeMin,
+                                uint minUnderlyingOut) internal {
         _swapToDebtTokens(flashLoanAmount, debtTradeMin);
-        _burnDebt(burnAmount, sender);
-        _withdrawUnderlying(sender, shares, minUnderlyingOut);
+        _burnDebt(burnAmount, depositor);
+        _withdrawUnderlying(depositor, shares, minUnderlyingOut);
         _repayFlashLoan(flashLoanAmount);
         IERC20 token = IERC20(underlyingToken);
-        TransferHelper.safeTransfer(underlyingToken, sender, token.balanceOf(address(this)));
+        TransferHelper.safeTransfer(underlyingToken, depositor, token.balanceOf(address(this)));
     }
 
     function _swapToDebtTokens(uint amount, uint minAmountOut) internal {
@@ -373,7 +461,7 @@ contract EulerCurveMetaLeverager is ILeverager, Ownable {
         }
 
         (address pool, uint256 amountOut) = curveFactory.get_best_rate(swapFrom, debtToken, amount);
-        require(amountOut>=minAmountOut, "Swap exceeds max acceptable loss");
+        require(amountOut >= minAmountOut, "Swap exceeds max acceptable loss");
         uint amountReceived = curveFactory.exchange{value:amount}(pool, swapFrom, debtToken, amount, minAmountOut);
         console.log("Swapped: ", amount, amountReceived);
         emit Swap(underlyingToken, debtToken, amount, amountReceived);
@@ -387,13 +475,18 @@ contract EulerCurveMetaLeverager is ILeverager, Ownable {
         emit Burn(debtToken, burnAmount);
     }
 
-    function _withdrawUnderlying(address sender, uint shares, uint minUnderlyingOut) internal {
-        uint underlying = alchemist.withdrawUnderlyingFrom(sender, yieldToken, shares, address(this), minUnderlyingOut);
+    function _withdrawUnderlying(address depositor, uint shares, uint minUnderlyingOut) internal {
+        uint underlying = alchemist.withdrawUnderlyingFrom(depositor,
+                                                           yieldToken,
+                                                           shares,
+                                                           address(this),
+                                                           minUnderlyingOut);
+
         console.log("WithdrawUnderlying: ", shares, underlying);
         emit WithdrawUnderlying(underlyingToken, shares, underlying);
     }
 
-    fallback() external payable {
+    receive() external payable {
         if(msg.sender!=weth) {
             IWETH(weth).deposit{value: msg.value}();
             console.log("WETH deposited: ", msg.value);

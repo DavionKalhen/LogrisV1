@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 import "./IERC4626.sol";
 
 pragma solidity ^0.8.0;

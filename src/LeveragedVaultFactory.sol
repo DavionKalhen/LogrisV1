@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 
-pragma solidity ^0.8.19;
+pragma solidity 0.8.19;
 
 import "./interfaces/ILeveragedVaultFactory.sol";
 import "./LeveragedVault.sol";
@@ -13,12 +13,25 @@ contract LeveragedVaultFactory is ILeveragedVaultFactory, ReentrancyGuard, Ownab
 
     constructor() {}
 
-    function createVault(string memory _tokenName, string memory _tokenDescription, address _yieldToken, address _underlyingToken, address _leverager, address _alchemistV2, uint32 _underlyingSlippageBasisPoints, uint32 _debtSlippageBasisPoints) external onlyOwner returns (address) {
-        require(vaults[_yieldToken] == address(0), "Vault already exists");
+    function createVault(string memory tokenName,
+                         string memory tokenDescription,
+                         address yieldToken,
+                         address underlyingToken,
+                         address leverager,
+                         address alchemistV2,
+                         uint32 underlyingSlippageBasisPoints,
+                         uint32 debtSlippageBasisPoints) external onlyOwner returns (address vault) {
+        require(vaults[yieldToken] == address(0), "Vault already exists");
         //something also needs to create the leverager and pass that address in
 
-        address vault = address(new LeveragedVault(_tokenName, _tokenDescription, _yieldToken, _underlyingToken, _leverager, _alchemistV2, _underlyingSlippageBasisPoints, _debtSlippageBasisPoints));
-        vaults[_yieldToken] = vault;
-        return vault;
+        vault = address(new LeveragedVault(tokenName,
+                                           tokenDescription,
+                                           yieldToken,
+                                           underlyingToken,
+                                           leverager,
+                                           alchemistV2,
+                                           underlyingSlippageBasisPoints,
+                                           debtSlippageBasisPoints));
+        vaults[yieldToken] = vault;
     }
 }
