@@ -1,51 +1,60 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.19;
 
-import "./Leverager.sol";
+import "./CurveLeverager.sol";
 import "../interfaces/euler/DToken.sol";
 import "../interfaces/euler/Markets.sol";
 //import console log
 import "forge-std/console.sol";
 
-contract EulerCurveMetaLeverager is Leverager {
+contract EulerCurveMetaLeverager is CurveLeverager {
     address public flashLoanSender;//will be replaced by a calculation eventually
+    Markets markets;
 
     constructor(address _yieldToken,
                 address _underlyingToken,
                 address _debtToken,
-                address _flashLoan,
-                address _flashLoanSender,
-                address _debtSource,
-                address _dex) 
-    Leverager(_yieldToken, _underlyingToken, _debtToken, _flashLoan, _debtSource, _dex) {
+                address flashLoan,
+                address _flashLoanSender) 
+    Leverager(_yieldToken, _underlyingToken, _debtToken) {
         flashLoanSender = _flashLoanSender;
+        markets = Markets(flashLoan);
     }
 
-    function leverage(uint clampedDeposit,
+    function _leverageWithFlashLoan(uint clampedDeposit,
                       uint flashLoanAmount,
                       uint underlyingDepositMin,
                       uint mintAmount,
-                      uint debtTradeMin) public override {
-        require(clampedDeposit > 0, "Vault is full");
-        TransferHelper.safeTransferFrom(underlyingToken, msg.sender, address(this), clampedDeposit);
+                      uint debtTradeMin) internal override {
+        address dTokenAddress = _getDTokenAddress();
+        DToken dToken = DToken(dTokenAddress);
+        bytes memory data = abi.encode(msg.sender,
+                                        flashLoanSender,
+                                        true,
+                                        clampedDeposit,
+                                        flashLoanAmount,
+                                        underlyingDepositMin,
+                                        mintAmount,
+                                        debtTradeMin);
+        dToken.flashLoan(flashLoanAmount, data);
+    }
 
-        if(flashLoanAmount == 0) {
-            console.log("Basic deposit");
-            _depositUnderlying(clampedDeposit, underlyingDepositMin, msg.sender);
-        } else {
-            address dTokenAddress = _getDTokenAddress();
-            DToken dToken = DToken(dTokenAddress);
-            bytes memory data = abi.encode(msg.sender,
-                                           flashLoanSender,
-                                           true,
-                                           clampedDeposit,
-                                           flashLoanAmount,
-                                           underlyingDepositMin,
-                                           mintAmount,
-                                           debtTradeMin);
-            dToken.flashLoan(flashLoanAmount, data);
-        }
-        //the dust should get transmitted back to msg.sender but it might not be worth the gas...
+    function _withdrawUnderlyingWithBurn(uint shares,
+                                         uint flashLoanAmount,
+                                         uint burnAmount,
+                                         uint debtTradeMin,
+                                         uint minUnderlyingOut) internal override {
+        address dTokenAddress = _getDTokenAddress();
+        DToken dToken = DToken(dTokenAddress);
+        bytes memory data = abi.encode(msg.sender,
+                                        flashLoanSender,
+                                        false,
+                                        shares,
+                                        flashLoanAmount,
+                                        burnAmount,
+                                        debtTradeMin,
+                                        minUnderlyingOut);
+        dToken.flashLoan(flashLoanAmount, data);
     }
 
     // so its really tricky having to have a contract receive the same callback signature with two different callback flows...
@@ -73,33 +82,7 @@ contract EulerCurveMetaLeverager is Leverager {
     }
 
     function _getDTokenAddress() internal view returns (address dTokenAddress) {
-        Markets markets = Markets(flashLoan);
         dTokenAddress = markets.underlyingToDToken(underlyingToken);
-    }
-
-
-    function withdrawUnderlying(uint shares,
-                                uint flashLoanAmount,
-                                uint burnAmount,
-                                uint debtTradeMin,
-                                uint minUnderlyingOut) public override {
-        require(shares > 0, "must include shares to withdraw");
-        require(shares <= getTotalWithdrawCapacity(msg.sender), "shares exceeds capacity");
-        if(burnAmount == 0) {
-            alchemist.withdrawUnderlyingFrom(msg.sender, yieldToken, shares, msg.sender, minUnderlyingOut);
-        } else {
-            address dTokenAddress = _getDTokenAddress();
-            DToken dToken = DToken(dTokenAddress);
-            bytes memory data = abi.encode(msg.sender,
-                                           flashLoanSender,
-                                           false,
-                                           shares,
-                                           flashLoanAmount,
-                                           burnAmount,
-                                           debtTradeMin,
-                                           minUnderlyingOut);
-            dToken.flashLoan(flashLoanAmount, data);
-        }
     }
 
 }

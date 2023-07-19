@@ -2,48 +2,52 @@
 
 pragma solidity 0.8.19;
 
-import "./Leverager.sol";
+import "./CurveLeverager.sol";
 import "../interfaces/balancer/IFlashLoanRecipient.sol";
 import "../interfaces/balancer/IVault.sol";
 //import console log
 import "forge-std/console.sol";
 
-contract BalancerCurveLeverager is Leverager, IFlashLoanRecipient{
-    IVault vault;
+contract BalancerCurveLeverager is CurveLeverager, IFlashLoanRecipient{
+    IVault vault = IVault(0xBA12222222228d8Ba445958a75a0704d566BF2C8);
 
     constructor(address _yieldToken,
     address _underlyingToken,
-    address _debtToken,
-    address _flashLoan,
-    address _debtSource,
-    address _dex)
-    Leverager(_yieldToken, _underlyingToken, _debtToken, _flashLoan, _debtSource, _dex) {
-        vault = IVault(flashLoan);
+    address _debtToken)
+    Leverager(_yieldToken, _underlyingToken, _debtToken) {
     }
 
-    function leverage(uint clampedDeposit,
+    function _leverageWithFlashLoan(uint clampedDeposit,
                       uint flashLoanAmount,
                       uint underlyingDepositMin,
                       uint mintAmount,
-                      uint debtTradeMin) public override {
-        require(clampedDeposit > 0, "Vault is full");
-        TransferHelper.safeTransferFrom(underlyingToken, msg.sender, address(this), clampedDeposit);
+                      uint debtTradeMin) internal override {
+        (IERC20[] memory tokens, uint[] memory amounts) = _getFlashLoanParameters(flashLoanAmount);
+        bytes memory data = abi.encode(msg.sender,
+                                        true,
+                                        clampedDeposit,
+                                        flashLoanAmount,
+                                        underlyingDepositMin,
+                                        mintAmount,
+                                        debtTradeMin);
+        vault.flashLoan(this, tokens, amounts, data);
+    }
 
-        if(flashLoanAmount == 0) {
-            console.log("Basic deposit");
-            _depositUnderlying(clampedDeposit, underlyingDepositMin, msg.sender);
-        } else {
-            (IERC20[] memory tokens, uint[] memory amounts) = _getFlashLoanParameters(flashLoanAmount);
-            bytes memory data = abi.encode(msg.sender,
-                                           true,
-                                           clampedDeposit,
-                                           flashLoanAmount,
-                                           underlyingDepositMin,
-                                           mintAmount,
-                                           debtTradeMin);
-            vault.flashLoan(this, tokens, amounts, data);
-        }
-        //the dust should get transmitted back to msg.sender but it might not be worth the gas...
+    function _withdrawUnderlyingWithBurn(uint shares,
+                                        uint flashLoanAmount,
+                                        uint burnAmount,
+                                        uint debtTradeMin,
+                                        uint minUnderlyingOut) internal override {
+        (IERC20[] memory tokens, uint[] memory amounts) = _getFlashLoanParameters(flashLoanAmount);
+        bytes memory data = abi.encode(msg.sender,
+                                        false,
+                                        shares,
+                                        flashLoanAmount,
+                                        burnAmount,
+                                        debtTradeMin,
+                                        minUnderlyingOut);
+
+        vault.flashLoan(this, tokens, amounts, data);
     }
 
     function _getFlashLoanParameters(uint flashLoanAmount) internal view returns (IERC20[] memory tokens,
@@ -74,29 +78,6 @@ contract BalancerCurveLeverager is Leverager, IFlashLoanRecipient{
             _flashLoanDeposit(depositor, param1, param2, param3, param4, param5);
         } else {
             _flashLoanWithdraw(depositor, param1, param2, param3, param4, param5);
-        }
-    }
-
-    function withdrawUnderlying(uint shares,
-                                uint flashLoanAmount,
-                                uint burnAmount,
-                                uint debtTradeMin,
-                                uint minUnderlyingOut) public override {
-        require(shares > 0, "must include shares to withdraw");
-        require(shares <= getTotalWithdrawCapacity(msg.sender), "shares exceeds capacity");
-        if(burnAmount == 0) {
-            alchemist.withdrawUnderlyingFrom(msg.sender, yieldToken, shares, msg.sender, minUnderlyingOut);
-        } else {
-            (IERC20[] memory tokens, uint[] memory amounts) = _getFlashLoanParameters(flashLoanAmount);
-            bytes memory data = abi.encode(msg.sender,
-                                           false,
-                                           shares,
-                                           flashLoanAmount,
-                                           burnAmount,
-                                           debtTradeMin,
-                                           minUnderlyingOut);
-
-            vault.flashLoan(this, tokens, amounts, data);
         }
     }
 }
