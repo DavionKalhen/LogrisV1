@@ -31,7 +31,7 @@ contract EulerCurveMetaLeveragerTest is Test {
 
     function setUp() public {
         vm.deal(address(this), 200 ether);
-        leverager = new EulerCurveMetaLeverager(wstETHAddress, wETHAddress, alETHAddress, eulerMarketsAddress, eulerCallbackSender, alchemistV2Address, curveFactoryAddress);
+        leverager = new EulerCurveMetaLeverager(wstETHAddress, wETHAddress, alETHAddress, eulerMarketsAddress, eulerCallbackSender);
         //setup whitelist
         alchemist = IAlchemistV2(alchemistV2Address);
         whitelist = Whitelist(alchemist.whitelist());

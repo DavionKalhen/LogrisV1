@@ -30,7 +30,7 @@ contract BalancerCurveLeveragerTest is Test {
 
     function setUp() public {
         vm.deal(address(this), 200 ether);
-        leverager = new BalancerCurveLeverager(wstETHAddress, wETHAddress, alETHAddress, balancerVaultAddress, alchemistV2Address, curveFactoryAddress);
+        leverager = new BalancerCurveLeverager(wstETHAddress, wETHAddress, alETHAddress);
         //setup whitelist
         alchemist = IAlchemistV2(alchemistV2Address);
         whitelist = Whitelist(alchemist.whitelist());
