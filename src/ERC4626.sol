@@ -153,7 +153,7 @@ abstract contract ERC4626 is ERC20, IERC4626 {
      * @dev Internal conversion function (from assets to shares) with support for rounding direction.
      */
 
-    function _convertToShares(uint256 assets, Math.Rounding rounding) internal view virtual returns (uint256) {
+    function _convertToShares(uint256 assets, Math.Rounding/* rounding*/) internal view virtual returns (uint256) {
         if(totalSupply() == 0)
             return assets;
         return assets * totalSupply() / (totalAssets() - assets);
