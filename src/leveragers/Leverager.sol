@@ -9,7 +9,6 @@ import "../interfaces/wETH/IWETH.sol";
 import "../interfaces/alchemist/IAlchemistV2.sol";
 import "../interfaces/alchemist/ITokenAdapter.sol";
 import "../interfaces/uniswap/TransferHelper.sol";
-import "../interfaces/curve/ICurveFactory.sol";
 
 //import console log
 import "forge-std/console.sol";
@@ -18,35 +17,29 @@ abstract contract Leverager is ILeverager, Ownable {
     address public yieldToken;
     address public underlyingToken;
     address public debtToken;
-    address public flashLoan;
-    address public debtSource;
-    address public dex;
-    IAlchemistV2 alchemist;
+    IAlchemistV2 public alchemist = IAlchemistV2(0x062Bf725dC4cDF947aa79Ca2aaCCD4F385b13b5c);
     
-    address constant curveEth = 0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE;
-    address constant weth = 0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2;
+    
     uint256 constant FIXED_POINT_SCALAR = 1e18;
+    address constant weth = 0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2;
 
     constructor(address _yieldToken,
     address _underlyingToken,
-    address _debtToken,
-    address _flashLoan,
-    address _debtSource,
-    address _dex)
+    address _debtToken)
     Ownable() {
         yieldToken = _yieldToken;
         underlyingToken = _underlyingToken;
         debtToken = _debtToken;
-        flashLoan = _flashLoan;
-        debtSource = _debtSource;
-        dex = _dex;
-        alchemist = IAlchemistV2(debtSource);
     }
 
     /// @dev this function needs to be implemented in the inheriting contract
-    function leverage(uint clampedDeposit, uint flashLoanAmount, uint underlyingDepositMin, uint mintAmount, uint debtTradeMin) public virtual;
+    function _leverageWithFlashLoan(uint clampedDeposit, uint flashLoanAmount, uint underlyingDepositMin, uint mintAmount, uint debtTradeMin) internal virtual;
     /// @dev this function needs to be implemented in the inheriting contract
-    function withdrawUnderlying(uint shares, uint flashLoanAmount, uint burnAmount, uint debtTradeMin, uint minUnderlyingOut) public virtual;
+    function _withdrawUnderlyingWithBurn(uint shares, uint flashLoanAmount, uint burnAmount, uint debtTradeMin, uint minUnderlyingOut) internal virtual;
+    /// @dev this function needs to be implemented in the inheriting contract
+    function _swapDebtTokens(uint amount, uint minAmountOut) internal virtual;
+    /// @dev this function needs to be implemented in the inheriting contract
+    function _swapToDebtTokens(uint amount, uint minAmountOut) internal virtual;
 
     //return amount denominated in underlying tokens
     function getDepositedBalance(address _depositor) public view override returns(uint amount) {
@@ -111,7 +104,7 @@ abstract contract Leverager is ILeverager, Ownable {
 
         (uint256 totalShares,) = alchemist.positions(_depositor, yieldToken);
         int256 debtBalance = getDebtBalance(_depositor);
-        uint clampedDebt = (debtBalance<=0) ? 0: uint(debtBalance);
+        uint clampedDebt = (debtBalance <= 0) ? 0: uint(debtBalance);
         uint debtShares = alchemist.normalizeDebtTokensToUnderlying(underlyingToken, clampedDebt)
                           * minimumCollateralization / FIXED_POINT_SCALAR;
 
@@ -211,6 +204,27 @@ abstract contract Leverager is ILeverager, Ownable {
         }
     }
 
+    function leverage(uint clampedDeposit,
+                      uint flashLoanAmount,
+                      uint underlyingDepositMin,
+                      uint mintAmount,
+                      uint debtTradeMin) public {
+        require(clampedDeposit > 0, "Vault is full");
+        TransferHelper.safeTransferFrom(underlyingToken, msg.sender, address(this), clampedDeposit);
+
+        if(flashLoanAmount == 0) {
+            console.log("Basic deposit");
+            _depositUnderlying(clampedDeposit, underlyingDepositMin, msg.sender);
+        } else {
+            _leverageWithFlashLoan(clampedDeposit,
+                                   flashLoanAmount,
+                                   underlyingDepositMin,
+                                   mintAmount,
+                                   debtTradeMin);
+        }
+        //the dust should get transmitted back to msg.sender but it might not be worth the gas...
+    }
+
     /*  While there is a liquidate call it can't be called on someone else's behalf which makes this more complicated.
         Unlike everything else on Alchemist there is no liquidateFrom so we have to flashloan to unwind the leverage.
         Basically this makes this the reverse of depositing with leverage.
@@ -249,6 +263,20 @@ abstract contract Leverager is ILeverager, Ownable {
             burnAmount = _basisPointAdjustment(flashLoanAmount, debtSlippageBasisPoints);
             debtTradeMin = burnAmount;
             minUnderlyingOut = _basisPointAdjustment(flashLoanAmount - burnAmount, underlyingSlippageBasisPoints);
+        }
+    }
+
+    function withdrawUnderlying(uint shares,
+                                uint flashLoanAmount,
+                                uint burnAmount,
+                                uint debtTradeMin,
+                                uint minUnderlyingOut) public {
+        require(shares > 0, "must include shares to withdraw");
+        require(shares <= getTotalWithdrawCapacity(msg.sender), "shares exceeds capacity");
+        if(burnAmount == 0) {
+            alchemist.withdrawUnderlyingFrom(msg.sender, yieldToken, shares, msg.sender, minUnderlyingOut);
+        } else {
+           _withdrawUnderlyingWithBurn(shares, flashLoanAmount, burnAmount, debtTradeMin, minUnderlyingOut);
         }
     }
 
@@ -320,19 +348,6 @@ abstract contract Leverager is ILeverager, Ownable {
         emit Mint(yieldToken, mintAmount);
     }
 
-    //amount denominated in debt tokens
-    function _swapDebtTokens(uint amount, uint minAmountOut) internal {
-        ICurveFactory curveFactory = ICurveFactory(dex);
-        address swapTo = underlyingToken == weth ? curveEth : underlyingToken;
-        
-        (address pool, uint256 amountOut) = curveFactory.get_best_rate(debtToken, swapTo, amount);
-        require(amountOut >= minAmountOut, "Swap exceeds max acceptable loss");
-        IERC20(debtToken).approve(dex, amount);
-        uint amountReceived = curveFactory.exchange(pool, debtToken, swapTo, amount, minAmountOut, address(this));
-        console.log("Swapped: ", amount, amountReceived);
-        emit Swap(debtToken, underlyingToken, amount, amountReceived);
-    }
-
     function _repayFlashLoan(uint amount) internal {
         TransferHelper.safeTransfer(underlyingToken, msg.sender, amount);
         console.log("Repaid: ", amount);
@@ -373,24 +388,9 @@ abstract contract Leverager is ILeverager, Ownable {
         TransferHelper.safeTransfer(underlyingToken, depositor, token.balanceOf(address(this)));
     }
 
-    function _swapToDebtTokens(uint amount, uint minAmountOut) internal {
-        ICurveFactory curveFactory = ICurveFactory(dex);
-        address swapFrom = underlyingToken;
-        if(underlyingToken == weth) {
-            swapFrom = curveEth;
-            IWETH(weth).withdraw(amount);
-        }
-
-        (address pool, uint256 amountOut) = curveFactory.get_best_rate(swapFrom, debtToken, amount);
-        require(amountOut >= minAmountOut, "Swap exceeds max acceptable loss");
-        uint amountReceived = curveFactory.exchange{value:amount}(pool, swapFrom, debtToken, amount, minAmountOut);
-        console.log("Swapped: ", amount, amountReceived);
-        emit Swap(underlyingToken, debtToken, amount, amountReceived);
-    }
-
     function _burnDebt(uint burnAmount, address depositor) internal {
         IERC20 token = IERC20(debtToken);
-        token.approve(debtSource, burnAmount);
+        token.approve(address(alchemist), burnAmount);
         alchemist.burn(burnAmount, depositor);
         console.log("Burned: ", burnAmount, depositor);
         emit Burn(debtToken, burnAmount);

@@ -37,7 +37,7 @@ contract LeveragedVaultTest is Test {
         user1 = vm.addr(1);
         vm.deal(user1, 200 ether);
         vm.deal(vm.addr(2), 200 ether);
-        leverager = new EulerCurveMetaLeverager(wstETHAddress, wETHAddress, alETHAddress, eulerMarketsAddress, eulerCallbackSender, alchemistV2Address, curveFactoryAddress);
+        leverager = new EulerCurveMetaLeverager(wstETHAddress, wETHAddress, alETHAddress, eulerMarketsAddress, eulerCallbackSender);
 
         alchemist = IAlchemistV2(alchemistV2Address);
         
