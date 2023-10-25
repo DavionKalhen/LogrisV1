@@ -21,6 +21,7 @@ contract EulerCurveMetaLeverager is CurveLeverager {
         markets = Markets(flashLoan);
     }
 
+    /// @inheritdoc Leverager
     function _leverageWithFlashLoan(uint clampedDeposit,
                       uint flashLoanAmount,
                       uint underlyingDepositMin,
@@ -39,6 +40,7 @@ contract EulerCurveMetaLeverager is CurveLeverager {
         dToken.flashLoan(flashLoanAmount, data);
     }
 
+    /// @inheritdoc Leverager
     function _withdrawUnderlyingWithBurn(uint shares,
                                          uint flashLoanAmount,
                                          uint burnAmount,
@@ -57,8 +59,10 @@ contract EulerCurveMetaLeverager is CurveLeverager {
         dToken.flashLoan(flashLoanAmount, data);
     }
 
-    // so its really tricky having to have a contract receive the same callback signature with two different callback flows...
-    // as luck would have it deposit and withdraw have the same number of parameters on their callback
+    /**
+        * @dev Callback function for flashloan. It will either deposit or withdraw depending on the data passed in.
+        * @param data The data passed in from the flashloan call. depositFlag tells us if withdraw or deposit.
+    */
     function onFlashLoan(bytes memory data) external {
         (address sender,
          address _flashLoanSender,
