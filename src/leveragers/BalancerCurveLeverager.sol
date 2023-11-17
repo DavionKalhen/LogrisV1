@@ -17,6 +17,7 @@ contract BalancerCurveLeverager is CurveLeverager, IFlashLoanRecipient{
     Leverager(_yieldToken, _underlyingToken, _debtToken) {
     }
 
+    /// @inheritdoc Leverager
     function _leverageWithFlashLoan(uint clampedDeposit,
                       uint flashLoanAmount,
                       uint underlyingDepositMin,
@@ -33,6 +34,7 @@ contract BalancerCurveLeverager is CurveLeverager, IFlashLoanRecipient{
         vault.flashLoan(this, tokens, amounts, data);
     }
 
+    /// @inheritdoc Leverager
     function _withdrawUnderlyingWithBurn(uint shares,
                                         uint flashLoanAmount,
                                         uint burnAmount,
@@ -58,8 +60,10 @@ contract BalancerCurveLeverager is CurveLeverager, IFlashLoanRecipient{
         amounts[0] = flashLoanAmount;
     }
 
-    // so its really tricky having to have a contract receive the same callback signature with two different callback flows...
-    // as luck would have it deposit and withdraw have the same number of parameters on their callback
+    /**
+    * @dev Called by the vault during flash loan execution
+    * @param userData is a packed tuple
+    */
     function receiveFlashLoan(IERC20[] memory,
                               uint256[] memory,
                               uint256[] memory,

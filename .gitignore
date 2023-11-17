@@ -1,5 +1,6 @@
 # Managed dependencies
 lib/
+node_modules/
 
 # Compiler files
 cache/

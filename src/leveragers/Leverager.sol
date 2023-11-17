@@ -41,33 +41,54 @@ abstract contract Leverager is ILeverager, Ownable {
     /// @dev this function needs to be implemented in the inheriting contract
     function _swapToDebtTokens(uint amount, uint minAmountOut) internal virtual;
 
-    //return amount denominated in underlying tokens
+    /**
+        * @notice Return the amount of underlying tokens deposited in this pool by `_depositor`
+        * @param _depositor address of depositor
+        * @return amount of underlying tokens
+     */
     function getDepositedBalance(address _depositor) public view override returns(uint amount) {
         //last accrued weight appears to be unrealized borrowCapacity denominated in debt tokens
         (uint256 shares,) = alchemist.positions(_depositor, yieldToken);
         amount = alchemist.convertSharesToUnderlyingTokens(yieldToken, shares);
     }
 
-    //return amount denominated in debt tokens
+    /**
+        * @notice Return the amount of debt tokens deposited in this pool by `_depositor`
+        * @param _depositor address of depositor
+        * @return amount of debt tokens
+     */
     function getDebtBalance(address _depositor) public view override returns(int256 amount) {
         (amount,) = alchemist.accounts(_depositor);
     }
 
-    //return amount denominated in underlying tokens
+    function abs(int256 x) internal pure returns (uint256) {
+        if (x < 0) {
+            return uint256(-x);
+        }
+        return uint256(x);
+    }
+
+    /**
+        * @notice Return the amount of underlying tokens that can be redeemed by `_depositor`
+        * @param _depositor address of depositor
+        * @return amount of underlying tokens
+     */
     function getRedeemableBalance(address _depositor) public view override returns(uint amount) {
         uint depositBalance = getDepositedBalance(_depositor);     
         int256 debtBalance = getDebtBalance(_depositor);
-        if(debtBalance >= 0) {
-            uint256 underlyingDebt = alchemist.normalizeDebtTokensToUnderlying(underlyingToken, uint(debtBalance));
-            return depositBalance - underlyingDebt;
+        uint256 debtOrCredit = alchemist.normalizeDebtTokensToUnderlying(underlyingToken, abs(debtBalance));
+        // using a conditional here to avoid sign operations on uints
+        if(debtBalance < 0) {
+            return depositBalance + debtOrCredit;
         } else {
-            uint256 underlyingCredit = alchemist.normalizeDebtTokensToUnderlying(underlyingToken,
-                                                                                 uint(-1 * debtBalance));
-            return depositBalance + underlyingCredit;
+            return depositBalance - debtOrCredit;
         }
     }
 
-    //return amount denominated in underlying tokens
+    /**
+        * @notice Checks the remaining capacity of the alchemist vault
+        * @return amount amount of underlying tokens that can be deposited in the alchemist vault
+    */
     function getDepositCapacity() public view override returns(uint amount) {
         IAlchemistV2.YieldTokenParams memory params = alchemist.getYieldTokenParameters(yieldToken);
         if(params.maximumExpectedValue >= params.expectedValue)
@@ -76,29 +97,44 @@ abstract contract Leverager is ILeverager, Ownable {
             amount = 0;
     }
 
-    //return amount denominated in debt tokens
+    /**
+        * @notice Calculates the remaining borrow capacity of the depositor
+        * @param _depositor Address of depositor
+        * @return amount Amount of underlying tokens that can be borrowed
+    */
     function getBorrowCapacity(address _depositor) public view override returns(uint amount) {
         uint256 minimumCollateralization = alchemist.minimumCollateralization();//includes 1e18
         uint depositBalance = getDepositedBalance(_depositor);     
         int256 debtBalance = getDebtBalance(_depositor);
-        uint debtAdjustedBalance = 0;
-        if(debtBalance >= 0) {
-            uint256 underlyingDebt = alchemist.normalizeDebtTokensToUnderlying(underlyingToken, uint(debtBalance));
-            debtAdjustedBalance = depositBalance - (underlyingDebt * minimumCollateralization / FIXED_POINT_SCALAR);
+        uint256 debtAdjustedBalance = 0;
+        uint256 debtOrCredit = alchemist.normalizeDebtTokensToUnderlying(underlyingToken, abs(debtBalance));
+        uint256 debtOrCreditAdj = debtOrCredit * minimumCollateralization / FIXED_POINT_SCALAR;
+
+        // using a conditional here to avoid sign operations on uints
+        if(debtBalance < 0) {
+            debtAdjustedBalance = depositBalance + debtOrCreditAdj;
         } else {
-            uint256 underlyingCredit = alchemist.normalizeDebtTokensToUnderlying(underlyingToken,
-                                                                                 uint(-1 * debtBalance));
-            debtAdjustedBalance = depositBalance + (underlyingCredit * minimumCollateralization / FIXED_POINT_SCALAR);
+            debtAdjustedBalance = depositBalance - debtOrCreditAdj;
         }
+
         amount = debtAdjustedBalance * FIXED_POINT_SCALAR / minimumCollateralization;
     }
 
+    /**
+        * @notice Returns the amount of depositor shares that can be withdrawn from the vault
+        * @param _depositor Address of depositor
+        * @return shares Amount of alchemist shares
+    */
     function getTotalWithdrawCapacity(address _depositor) public view override returns (uint shares) {
         (shares,) = alchemist.positions(_depositor, yieldToken);
         return shares;
     }
 
-    //gets the withdraw capacity of the vault without liquidation
+    /**
+        * @notice Returns the amount of depositor shares that can be withdrawn from the vault without liquidating debt
+        * @param _depositor Address of depositor
+        * @return shares Amount of alchemist shares
+    */
     function getFreeWithdrawCapacity(address _depositor) public view override returns(uint shares) {
         uint256 minimumCollateralization = alchemist.minimumCollateralization();//includes 1e18
 
@@ -111,7 +147,11 @@ abstract contract Leverager is ILeverager, Ownable {
         shares = totalShares - debtShares;
     }
 
-    //returns Alchemix shares
+    /**
+        * @notice Returns the amount of alchemist shares that corresponds to the amount of tokens
+        * @param amount Amount of underlying tokens to convert
+        * @return shares Amount of alchemist shares
+    */
     function convertUnderlyingTokensToShares(uint256 amount) external view override returns (uint shares) {
         shares = alchemist.convertUnderlyingTokensToShares(yieldToken, amount);
     }
@@ -204,6 +244,14 @@ abstract contract Leverager is ILeverager, Ownable {
         }
     }
 
+    /**
+        * @notice Deposit underlying tokens in alchemist
+        * @param clampedDeposit Amount of underlying tokens to deposit
+        * @param flashLoanAmount Amount of underlying tokens to borrow
+        * @param underlyingDepositMin Minimum amount of yield tokens to receive
+        * @param mintAmount Amount of debt tokens to mint
+        * @param debtTradeMin Minimum amount of debt tokens to receive to protect from slippage
+    */
     function leverage(uint clampedDeposit,
                       uint flashLoanAmount,
                       uint underlyingDepositMin,
@@ -266,6 +314,14 @@ abstract contract Leverager is ILeverager, Ownable {
         }
     }
 
+    /**
+        * @notice Withdraw underlying tokens from alchemist
+        * @param shares Amount of shares to withdraw
+        * @param flashLoanAmount Amount of underlying tokens to borrow
+        * @param burnAmount Amount of debt tokens to burn
+        * @param debtTradeMin Minimum amount of debt tokens to receive to protect from slippage
+        * @param minUnderlyingOut Minimum amount of underlying tokens to receive to protect from slippage
+    */
     function withdrawUnderlying(uint shares,
                                 uint flashLoanAmount,
                                 uint burnAmount,
@@ -280,13 +336,15 @@ abstract contract Leverager is ILeverager, Ownable {
         }
     }
 
-    /// @dev Fills up as much vault capacity as possible using leverage.
-    ///
-    /// This method is convenient and unlikely to revert but is vulnerable to sandwich attacks.
-    /// @param depositAmount Max amount of underlying token to use as the base deposit
-    /// @param underlyingSlippageBasisPoints Slippage tolerance when trading underlying to yield token. Must include basis points for peg deviations.
-    /// @param debtSlippageBasisPoints Slippage tolerance when trading debt to underlying token. Does not account for debt peg deviations.
-    ///
+    /**
+        * @notice Fills up as much vault capacity as possible using leverage.
+        * @dev This method is convenient and unlikely to revert but is vulnerable to sandwich attacks.
+        * @param depositAmount Max amount of underlying token to use as the base deposit
+        * @param underlyingSlippageBasisPoints Slippage tolerance when trading underlying to yield token.
+        * Must include basis points for peg deviations.
+        * @param debtSlippageBasisPoints Slippage tolerance when trading debt to underlying token.
+        * Does not account for debt peg deviations.
+    */
     function leverageAtomic(uint depositAmount,
                             uint32 underlyingSlippageBasisPoints,
                             uint32 debtSlippageBasisPoints) external override {
@@ -300,6 +358,15 @@ abstract contract Leverager is ILeverager, Ownable {
         leverage(clampedDeposit, flashLoanAmount, underlyingDepositMin, mintAmount, debtTradeMin);
     }
 
+    /**
+        * @notice Deposit underlying tokens in alchemist on behalf of the depositor
+        * @param depositor Address of depositor
+        * @param clampedDeposit Amount of underlying tokens to deposit
+        * @param flashLoanAmount Amount of underlying tokens to borrow
+        * @param underlyingDepositMin Minimum amount of yield tokens to receive
+        * @param mintAmount Amount of debt tokens to mint
+        * @param debtTradeMin Minimum amount of debt tokens to receive to protect from slippage
+    */
     function _flashLoanDeposit(address depositor,
                                uint clampedDeposit,
                                uint flashLoanAmount,
@@ -313,6 +380,9 @@ abstract contract Leverager is ILeverager, Ownable {
         _repayFlashLoan(flashLoanAmount);
     }
 
+    /**
+        * @notice need help understanding this
+    */
     function _calculateFlashLoanAmount(uint depositAmount,
                                        uint32 underlyingSlippageBasisPoints,
                                        uint32 debtSlippageBasisPoints,
@@ -328,6 +398,12 @@ abstract contract Leverager is ILeverager, Ownable {
                            / (minimumCollateralization - totalTradeLoss);
     }
 
+    /**
+        * @notice Deposit underlying tokens in alchemist
+        * @param amount Amount of underlying tokens to deposit
+        * @param minAmountOut Minimum amount of yield tokens to receive
+        * @param _sender Address of depositor
+    */
     function _depositUnderlying(uint amount, uint minAmountOut, address _sender) internal {
         IERC20(underlyingToken).approve(address(alchemist), amount);
         console.log("Deposit underlying: ", amount);
@@ -335,6 +411,11 @@ abstract contract Leverager is ILeverager, Ownable {
         emit DepositUnderlying(underlyingToken, amount, alchemist.convertSharesToUnderlyingTokens(yieldToken, shares));
     }
 
+    /**
+        * @notice Mint debt tokens in alchemist
+        * @param mintAmount Amount of debt tokens to mint
+        * @param _sender Address of depositor
+    */
     function _mintDebtTokens(uint mintAmount, address _sender) internal {
         //this needs to be accountd for in calculate flash loan
         // (uint maxMintable, ,) = alchemist.getMintLimitInfo();
@@ -347,21 +428,41 @@ abstract contract Leverager is ILeverager, Ownable {
         console.log("Minted: ", mintAmount);
         emit Mint(yieldToken, mintAmount);
     }
-
+    
+    /**
+        * @notice Repay flash loan
+        * @param amount Amount of underlying tokens to repay
+    */
     function _repayFlashLoan(uint amount) internal {
         TransferHelper.safeTransfer(underlyingToken, msg.sender, amount);
         console.log("Repaid: ", amount);
     }
 
+    /**
+        * @notice Applies slippage points to a token amount by reducing it
+        * @param amountIn Amount of tokens to adjust
+        * @param slippageBasisPoints Slippage tolerance expressed in 1/100 of a percent
+    */
     function _basisPointAdjustment(uint256 amountIn, uint32 slippageBasisPoints) internal pure returns(uint256) {
         return amountIn * (10000 - slippageBasisPoints) / 10000;
     }
 
+    /**
+        * @notice Applies slippage points to a token amount by augmenting it
+        * @param amountIn Amount of tokens to adjust
+        * @param slippageBasisPoints Slippage tolerance expressed in 1/100 of a percent
+    */
     function _basisPointAdjustmentUp(uint256 amountIn, uint32 slippageBasisPoints) internal pure returns(uint256) {
         return amountIn * (10000 + slippageBasisPoints) / 10000;
     }
 
-    // This method is convenient and unlikely to revert but is vulnerable to sandwich attacks.
+    /**
+        * @notice Withdraw underlying tokens from alchemist
+        * @dev This method is convenient and unlikely to revert but is vulnerable to sandwich attacks.
+        * @param shares Amount of shares to withdraw
+        * @param underlyingSlippageBasisPoints Slippage tolerance when trading underlying to yield token. Must include basis points for peg deviations.
+        * @param debtSlippageBasisPoints Slippage tolerance when trading debt to underlying token
+    */
     function withdrawUnderlyingAtomic(uint shares,
                                       uint32 underlyingSlippageBasisPoints,
                                       uint32 debtSlippageBasisPoints) external override {
@@ -374,6 +475,12 @@ abstract contract Leverager is ILeverager, Ownable {
         withdrawUnderlying(shares, flashLoanAmount, burnAmount, debtTradeMin, minUnderlyingOut);
     }
 
+    /**
+        * @notice Withdraw underlying tokens from alchemist on behalf of the depositor
+        * @param depositor Address of depositor
+        * @param shares Amount of shares to withdraw
+        * @param flashLoanAmount Amount of underlying tokens to borrow
+    */
     function _flashLoanWithdraw(address depositor,
                                 uint shares,
                                 uint flashLoanAmount,
@@ -388,6 +495,11 @@ abstract contract Leverager is ILeverager, Ownable {
         TransferHelper.safeTransfer(underlyingToken, depositor, token.balanceOf(address(this)));
     }
 
+    /**
+        * @notice Burn debt tokens in alchemist and credit the depositor
+        * @param burnAmount Amount of debt tokens to burn
+        * @param depositor Address of depositor
+    */
     function _burnDebt(uint burnAmount, address depositor) internal {
         IERC20 token = IERC20(debtToken);
         token.approve(address(alchemist), burnAmount);
@@ -396,6 +508,12 @@ abstract contract Leverager is ILeverager, Ownable {
         emit Burn(debtToken, burnAmount);
     }
 
+    /**
+        * @notice Withdraw underlying tokens from alchemist on behalf of the depositor
+        * @param depositor Address of depositor
+        * @param shares Amount of shares to withdraw
+        * @param minUnderlyingOut Minimum amount of underlying tokens to receive to protect from slippage
+    */
     function _withdrawUnderlying(address depositor, uint shares, uint minUnderlyingOut) internal {
         uint underlying = alchemist.withdrawUnderlyingFrom(depositor,
                                                            yieldToken,

@@ -10,6 +10,7 @@ abstract contract CurveLeverager is Leverager {
     address constant dex = 0x99a58482BD75cbab83b27EC03CA68fF489b5788f;
     address constant curveEth = 0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE;
 
+    /// @inheritdoc Leverager
     function _swapDebtTokens(uint amount, uint minAmountOut) internal override {
         ICurveFactory curveFactory = ICurveFactory(dex);
         address swapTo = underlyingToken == weth ? curveEth : underlyingToken;
@@ -21,6 +22,7 @@ abstract contract CurveLeverager is Leverager {
         emit Swap(debtToken, underlyingToken, amount, amountReceived);
     }
 
+    /// @inheritdoc Leverager
     function _swapToDebtTokens(uint amount, uint minAmountOut) internal override {
         ICurveFactory curveFactory = ICurveFactory(dex);
         address swapFrom = underlyingToken;
