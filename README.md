@@ -58,3 +58,32 @@ Run Development Server
 npm run dev
 ```
 
+## Run local node
+
+- Build contracts
+```
+forge build
+```
+
+- Set env variables
+```
+export ALCHEMY_KEY=https://eth-mainnet.g.alchemy.com/v2/{YOUR_KEY}
+```
+
+- Run local node in a new tab
+```
+make testnet
+```
+
+- Deploy contracts
+```
+make localdeploy
+```
+
+- Run whitelisting script
+```
+node script/whitelist.js
+```
+
+- Connect your metamask to :8545
+- Run frontend

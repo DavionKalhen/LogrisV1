@@ -44,6 +44,8 @@ contract BalancerCurveLeveragerTest is Test {
         wETH = IWETH(wETHAddress);
         wETH.approve(address(leverager), type(uint256).max);
         wETH.approve(address(alchemistV2Address), type(uint256).max);
+        // make sure we have no wETH
+        wETH.transfer(uniswapv2RouterAddress,wETH.balanceOf(address(this)));
     }
 
     // denominated in underlying token

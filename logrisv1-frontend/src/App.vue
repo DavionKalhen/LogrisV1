@@ -71,7 +71,7 @@ methods: {
     },
     async leverage() {
       this.loading = true;
-      const txn = await this.wallet.leverage(this.amount!.toString()).catch((err) => {
+      const txn = await this.wallet.leverage().catch((err) => {
         console.log(err);
         this.loading = false;
       });

@@ -102,7 +102,9 @@ contract LeveragedVault is Ownable, ERC4626, ILeveragedVault {
     }
 
     function convertSharesToUnderlyingTokens(uint256 leveragedVaultShares) public view returns (uint256) {
-        console.log(totalSupply());
+        if(totalSupply() == 0) {
+            return 0;
+        }
         return leveragedVaultShares * getVaultRedeemableBalance() / totalSupply();
     }
 

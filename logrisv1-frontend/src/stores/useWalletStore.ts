@@ -131,7 +131,9 @@ export const useWalletStore = defineStore({
       const address = this.address
       console.log(address)
       const shares = await contract.balanceOf(address);
+      console.log(shares)
       const balance = await contract.convertSharesToUnderlyingTokens(shares);
+      console.log(balance)
       this.deposit = balance;
     },
     async getFullBalance() {
@@ -147,7 +149,7 @@ export const useWalletStore = defineStore({
       this.pool = balance;
       return balance;
     },
-    async leverage(amount: string) {
+    async leverage() {
       const provider = this.provider;
       const signer = provider.getSigner();
 
@@ -156,7 +158,9 @@ export const useWalletStore = defineStore({
         LeveragedVaultABI,
         signer
       );
-      const tx = await contract.leverage();
+      const params = await contract.getLeverageParameters();
+      console.log(params);
+      const tx = await contract.leverage(params[0], params[1], params[2], params[3], params[4]);
       contract.on("Leverage", async (user, amount, leverage) => {
         const provider = this.provider;
         const signer = provider.getSigner();
