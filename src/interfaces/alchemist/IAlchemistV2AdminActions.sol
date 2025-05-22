@@ -1,4 +1,5 @@
-pragma solidity ^0.8.0;
+// SPDX-License-Identifier: MIT
+pragma solidity 0.8.26;
 
 /// @title  IAlchemistV2AdminActions
 /// @author Alchemix Finance
@@ -252,51 +253,11 @@ interface IAlchemistV2AdminActions {
     ///
     /// @notice `msg.sender` must be the admin or this call will revert with an {Unauthorized} error.
     /// @notice `yieldToken` must be registered or this call will revert with a {UnsupportedToken} error.
-    /// @notice The token that `adapter` supports must be `yieldToken` or this call will revert with a {IllegalState} error.
+    /// @notice `tokenAdapter` must be non-zero or this call will revert with an {IllegalArgument} error.
     ///
     /// @notice Emits a {TokenAdapterUpdated} event.
     ///
-    /// @param yieldToken The address of the yield token to set the adapter for.
-    /// @param adapter    The address to set the token adapter to.
-    function setTokenAdapter(address yieldToken, address adapter) external;
-
-    /// @notice Sets the maximum expected value of a yield token that the system can hold.
-    ///
-    /// @notice `msg.sender` must be the admin or this call will revert with an {Unauthorized} error.
-    /// @notice `yieldToken` must be registered or this call will revert with a {UnsupportedToken} error.
-    ///
-    /// @param yieldToken The address of the yield token to set the maximum expected value for.
-    /// @param value      The maximum expected value of the yield token denoted measured in its underlying token.
-    function setMaximumExpectedValue(address yieldToken, uint256 value)
-        external;
-
-    /// @notice Sets the maximum loss that a yield bearing token will permit before restricting certain actions.
-    ///
-    /// @notice `msg.sender` must be the admin or this call will revert with an {Unauthorized} error.
-    /// @notice `yieldToken` must be registered or this call will revert with a {UnsupportedToken} error.
-    ///
-    /// @dev There are two types of loss of value for yield bearing assets: temporary or permanent. The system will automatically restrict actions which are sensitive to both forms of loss when detected. For example, deposits must be restricted when an excessive loss is encountered to prevent users from having their collateral harvested from them. While the user would receive credit, which then could be exchanged for value equal to the collateral that was harvested from them, it is seen as a negative user experience because the value of their collateral should have been higher than what was originally recorded when they made their deposit.
-    ///
-    /// @param yieldToken The address of the yield bearing token to set the maximum loss for.
-    /// @param value      The value to set the maximum loss to. This is in units of basis points.
-    function setMaximumLoss(address yieldToken, uint256 value) external;
-
-    /// @notice Snap the expected value `yieldToken` to the current value.
-    ///
-    /// @notice `msg.sender` must be the admin or this call will revert with an {Unauthorized} error.
-    /// @notice `yieldToken` must be registered or this call will revert with a {UnsupportedToken} error.
-    ///
-    /// @dev This function should only be used in the event of a loss in the target yield-token. For example, say a third-party protocol experiences a fifty percent loss. The expected value (amount of underlying tokens) of the yield tokens being held by the system would be two times the real value that those yield tokens could be redeemed for. This function gives governance a way to realize those losses so that users can continue using the token as normal.
-    ///
-    /// @param yieldToken The address of the yield token to snap.
-    function snap(address yieldToken) external;
-
-    /// @notice Sweep all of 'rewardtoken' from the alchemist into the admin.
-    ///
-    /// @notice `msg.sender` must be the admin or this call will revert with an {Unauthorized} error.
-    /// @notice `rewardToken` must not be a yield or underlying token or this call will revert with a {UnsupportedToken} error.
-    ///
-    /// @param rewardToken The address of the reward token to snap.
-    /// @param amount The amount of 'rewardToken' to sweep to the admin.
-    function sweepTokens(address rewardToken, uint256 amount) external ;
+    /// @param yieldToken   The address of the yield token.
+    /// @param tokenAdapter The address of the token adapter.
+    function setTokenAdapter(address yieldToken, address tokenAdapter) external;
 }

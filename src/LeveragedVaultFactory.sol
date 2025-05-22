@@ -1,17 +1,17 @@
 // SPDX-License-Identifier: MIT
 
-pragma solidity 0.8.19;
+pragma solidity 0.8.26;
 
 import "./interfaces/ILeveragedVaultFactory.sol";
 import "./LeveragedVault.sol";
-import "lib/openzeppelin-contracts/contracts/security/ReentrancyGuard.sol";
+import "lib/openzeppelin-contracts/contracts/utils/ReentrancyGuard.sol";
 import "lib/openzeppelin-contracts/contracts/access/Ownable.sol";
 import "forge-std/console.sol";
 
 contract LeveragedVaultFactory is ILeveragedVaultFactory, ReentrancyGuard, Ownable {   
     mapping (address => address) public vaults;
 
-    constructor() {}
+    constructor() Ownable(msg.sender) {}
 
     function createVault(string memory tokenName,
                          string memory tokenDescription,

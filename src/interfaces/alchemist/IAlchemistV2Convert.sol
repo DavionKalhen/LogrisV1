@@ -1,4 +1,5 @@
-pragma solidity ^0.8.0;
+// SPDX-License-Identifier: MIT
+pragma solidity 0.8.26;
 
 interface IAlchemistV2Convert {
     function convertYieldTokensToShares(address yieldToken, uint256 amount) external view returns (uint256);

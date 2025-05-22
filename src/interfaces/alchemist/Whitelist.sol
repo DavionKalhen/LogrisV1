@@ -1,4 +1,5 @@
-pragma solidity ^0.8.11;
+// SPDX-License-Identifier: MIT
+pragma solidity 0.8.26;
 
 import "./Errors.sol";
 import "./IWhitelist.sol";
@@ -14,7 +15,7 @@ contract Whitelist is IWhitelist, Ownable {
   /// @inheritdoc IWhitelist
   bool public override disabled;
 
-  constructor() Ownable() {}
+  constructor() Ownable(msg.sender) {}
 
   /// @inheritdoc IWhitelist
   function getAddresses() external view returns (address[] memory) {

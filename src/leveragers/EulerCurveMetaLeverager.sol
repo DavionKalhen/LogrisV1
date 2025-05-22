@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-pragma solidity 0.8.19;
+pragma solidity 0.8.26;
 
 import "./CurveLeverager.sol";
 import "../interfaces/euler/DToken.sol";
@@ -26,8 +26,11 @@ contract EulerCurveMetaLeverager is CurveLeverager {
                       uint flashLoanAmount,
                       uint underlyingDepositMin,
                       uint mintAmount,
-                      uint debtTradeMin) internal override {
+                      uint debtTradeMin,
+                      bytes memory swapParams) internal override {
+        console.log("mop");
         address dTokenAddress = _getDTokenAddress();
+        console.log("plop");
         DToken dToken = DToken(dTokenAddress);
         bytes memory data = abi.encode(msg.sender,
                                         flashLoanSender,
@@ -36,7 +39,8 @@ contract EulerCurveMetaLeverager is CurveLeverager {
                                         flashLoanAmount,
                                         underlyingDepositMin,
                                         mintAmount,
-                                        debtTradeMin);
+                                        debtTradeMin,
+                                        swapParams);
         dToken.flashLoan(flashLoanAmount, data);
     }
 
@@ -45,7 +49,8 @@ contract EulerCurveMetaLeverager is CurveLeverager {
                                          uint flashLoanAmount,
                                          uint burnAmount,
                                          uint debtTradeMin,
-                                         uint minUnderlyingOut) internal override {
+                                         uint minUnderlyingOut,
+                                         bytes memory swapParams) internal override {
         address dTokenAddress = _getDTokenAddress();
         DToken dToken = DToken(dTokenAddress);
         bytes memory data = abi.encode(msg.sender,
@@ -55,7 +60,8 @@ contract EulerCurveMetaLeverager is CurveLeverager {
                                         flashLoanAmount,
                                         burnAmount,
                                         debtTradeMin,
-                                        minUnderlyingOut);
+                                        minUnderlyingOut,
+                                        swapParams);
         dToken.flashLoan(flashLoanAmount, data);
     }
 
@@ -71,7 +77,8 @@ contract EulerCurveMetaLeverager is CurveLeverager {
          uint param2,
          uint param3,
          uint param4,
-         uint param5) = abi.decode(data, (address, address, bool, uint, uint, uint, uint, uint));
+         uint param5,
+         bytes memory params) = abi.decode(data, (address, address, bool, uint, uint, uint, uint, uint, bytes));
         //We'd really like to find a way to flashloan while retaining msg.sender.
         //so that we don't need a mint allowance on alchemix to the leverager
         console.log("msg.sender:", msg.sender);
@@ -79,9 +86,9 @@ contract EulerCurveMetaLeverager is CurveLeverager {
         console.log("flashLoanSender:", _flashLoanSender);
         require(msg.sender == _flashLoanSender, "callback caller must be flashloan source");
         if(depositFlag) {
-            _flashLoanDeposit(sender, param1, param2, param3, param4, param5);
+            _flashLoanDeposit(sender, param1, param2, param3, param4, param5, params);
         } else {
-            _flashLoanWithdraw(sender, param1, param2, param3, param4, param5);
+            _flashLoanWithdraw(sender, param1, param2, param3, param4, param5, params);
         }
     }
 

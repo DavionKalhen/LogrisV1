@@ -1,4 +1,5 @@
-pragma solidity ^0.8.0;
+// SPDX-License-Identifier: MIT
+pragma solidity 0.8.26;
 
 import "./IAlchemistV2Actions.sol";
 import "./IAlchemistV2AdminActions.sol";

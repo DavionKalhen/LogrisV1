@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 
-pragma solidity 0.8.19;
+pragma solidity 0.8.26;
 
 import "./CurveLeverager.sol";
 import "../interfaces/balancer/IFlashLoanRecipient.sol";
@@ -22,7 +22,8 @@ contract BalancerCurveLeverager is CurveLeverager, IFlashLoanRecipient{
                       uint flashLoanAmount,
                       uint underlyingDepositMin,
                       uint mintAmount,
-                      uint debtTradeMin) internal override {
+                      uint debtTradeMin,
+                      bytes memory swapParams) internal override {
         (IERC20[] memory tokens, uint[] memory amounts) = _getFlashLoanParameters(flashLoanAmount);
         bytes memory data = abi.encode(msg.sender,
                                         true,
@@ -30,7 +31,8 @@ contract BalancerCurveLeverager is CurveLeverager, IFlashLoanRecipient{
                                         flashLoanAmount,
                                         underlyingDepositMin,
                                         mintAmount,
-                                        debtTradeMin);
+                                        debtTradeMin,
+                                        swapParams);
         vault.flashLoan(this, tokens, amounts, data);
     }
 
@@ -39,7 +41,8 @@ contract BalancerCurveLeverager is CurveLeverager, IFlashLoanRecipient{
                                         uint flashLoanAmount,
                                         uint burnAmount,
                                         uint debtTradeMin,
-                                        uint minUnderlyingOut) internal override {
+                                        uint minUnderlyingOut,
+                                        bytes memory swapParams) internal override {
         (IERC20[] memory tokens, uint[] memory amounts) = _getFlashLoanParameters(flashLoanAmount);
         bytes memory data = abi.encode(msg.sender,
                                         false,
@@ -47,7 +50,8 @@ contract BalancerCurveLeverager is CurveLeverager, IFlashLoanRecipient{
                                         flashLoanAmount,
                                         burnAmount,
                                         debtTradeMin,
-                                        minUnderlyingOut);
+                                        minUnderlyingOut,
+                                        swapParams);
 
         vault.flashLoan(this, tokens, amounts, data);
     }
@@ -77,11 +81,12 @@ contract BalancerCurveLeverager is CurveLeverager, IFlashLoanRecipient{
          uint param2,
          uint param3,
          uint param4,
-         uint param5) = abi.decode(userData, (address, bool, uint, uint, uint, uint, uint));
+         uint param5,
+         bytes memory params) = abi.decode(userData, (address, bool, uint, uint, uint, uint, uint, bytes));
         if(depositFlag) {
-            _flashLoanDeposit(depositor, param1, param2, param3, param4, param5);
+            _flashLoanDeposit(depositor, param1, param2, param3, param4, param5, params);
         } else {
-            _flashLoanWithdraw(depositor, param1, param2, param3, param4, param5);
+            _flashLoanWithdraw(depositor, param1, param2, param3, param4, param5, params);
         }
     }
 }

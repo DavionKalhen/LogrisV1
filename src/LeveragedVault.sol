@@ -11,7 +11,7 @@ import "./interfaces/wETH/IWETH.sol";
 
 import "forge-std/console.sol";
 
-pragma solidity 0.8.19;
+pragma solidity 0.8.26;
 
 /**
 
@@ -36,7 +36,7 @@ contract LeveragedVault is Ownable, ERC4626, ILeveragedVault {
     uint32 _debtSlippageBasisPoints) payable
     ERC4626(IERC20(yieldToken))
     ERC20(tokenDescription, tokenName)
-    Ownable()
+    Ownable(msg.sender)
     {
         leverager = ILeverager(_leverager);
         _underlyingToken = IERC20(underlyingTokenAddress);
@@ -127,7 +127,8 @@ contract LeveragedVault is Ownable, ERC4626, ILeveragedVault {
                       uint flashLoanAmount,
                       uint underlyingDepositMin,
                       uint mintAmount,
-                      uint debtTradeMin) external {
+                      uint debtTradeMin,
+                      bytes memory swapParams) external {
         uint256 depositAmount = _underlyingToken.balanceOf(address(this));
         int256 debtBefore = leverager.getDebtBalance(address(this));
         IAlchemistV2 alchemist = IAlchemistV2(debtSource);
@@ -135,7 +136,7 @@ contract LeveragedVault is Ownable, ERC4626, ILeveragedVault {
         alchemist.approveMint(address(leverager), depositAmount);      
 
         wETH.approve(address(leverager), depositAmount);
-        leverager.leverage(clampedDeposit, flashLoanAmount, underlyingDepositMin, mintAmount, debtTradeMin);
+        leverager.leverage(clampedDeposit, flashLoanAmount, underlyingDepositMin, mintAmount, debtTradeMin, swapParams);
         //TODO: sanity check the amount actually deposited to protect against a malicious leverager contract here
         emit Leverage(address(_underlyingToken), depositAmount, leverager.getDebtBalance(address(this)) - debtBefore);
     }
@@ -144,7 +145,8 @@ contract LeveragedVault is Ownable, ERC4626, ILeveragedVault {
                                 uint flashLoanAmount,
                                 uint burnAmount,
                                 uint debtTradeMin,
-                                uint minUnderlyingOut) external virtual returns (uint256 underlyingWithdrawAmount) {
+                                uint minUnderlyingOut,
+                                bytes memory swapParams) external virtual returns (uint256 underlyingWithdrawAmount) {
         require(leveragedVaultShares <= balanceOf(msg.sender), "You don't have enough deposited");
         // I'm skeptical you'll ever have underlyingWithdrawAmount after accounting for slippage
         underlyingWithdrawAmount = convertSharesToUnderlyingTokens(leveragedVaultShares);
@@ -152,7 +154,7 @@ contract LeveragedVault is Ownable, ERC4626, ILeveragedVault {
         if(depositPoolBalance < underlyingWithdrawAmount) {
             uint leveragerShares = leverager.convertUnderlyingTokensToShares(
                 underlyingWithdrawAmount-depositPoolBalance);
-            leverager.withdrawUnderlying(leveragerShares, flashLoanAmount, burnAmount, debtTradeMin, minUnderlyingOut);
+            leverager.withdrawUnderlying(leveragerShares, flashLoanAmount, burnAmount, debtTradeMin, minUnderlyingOut, swapParams);
         }
         //TODO: sanity check the amount actually withdrawn to protect against a malicious leverager contract here
         _withdraw(msg.sender, msg.sender, msg.sender, leveragedVaultShares, underlyingWithdrawAmount);

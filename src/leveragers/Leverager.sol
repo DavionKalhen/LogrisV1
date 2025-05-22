@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 
-pragma solidity 0.8.19;
+pragma solidity 0.8.26;
 
 import "../interfaces/ILeverager.sol";
 import "lib/openzeppelin-contracts/contracts/access/Ownable.sol";
@@ -26,20 +26,20 @@ abstract contract Leverager is ILeverager, Ownable {
     constructor(address _yieldToken,
     address _underlyingToken,
     address _debtToken)
-    Ownable() {
+    Ownable(msg.sender) {
         yieldToken = _yieldToken;
         underlyingToken = _underlyingToken;
         debtToken = _debtToken;
     }
 
     /// @dev this function needs to be implemented in the inheriting contract
-    function _leverageWithFlashLoan(uint clampedDeposit, uint flashLoanAmount, uint underlyingDepositMin, uint mintAmount, uint debtTradeMin) internal virtual;
+    function _leverageWithFlashLoan(uint clampedDeposit, uint flashLoanAmount, uint underlyingDepositMin, uint mintAmount, uint debtTradeMin, bytes memory swapParams) internal virtual;
     /// @dev this function needs to be implemented in the inheriting contract
-    function _withdrawUnderlyingWithBurn(uint shares, uint flashLoanAmount, uint burnAmount, uint debtTradeMin, uint minUnderlyingOut) internal virtual;
+    function _withdrawUnderlyingWithBurn(uint shares, uint flashLoanAmount, uint burnAmount, uint debtTradeMin, uint minUnderlyingOut, bytes memory swapParams) internal virtual;
     /// @dev this function needs to be implemented in the inheriting contract
-    function _swapDebtTokens(uint amount, uint minAmountOut) internal virtual;
+    function _swapDebtTokens(uint amount, uint minAmountOut, bytes memory swapParams) internal virtual;
     /// @dev this function needs to be implemented in the inheriting contract
-    function _swapToDebtTokens(uint amount, uint minAmountOut) internal virtual;
+    function _swapToDebtTokens(uint amount, uint minAmountOut, bytes memory swapParams) internal virtual;
 
     /**
         * @notice Return the amount of underlying tokens deposited in this pool by `_depositor`
@@ -251,12 +251,14 @@ abstract contract Leverager is ILeverager, Ownable {
         * @param underlyingDepositMin Minimum amount of yield tokens to receive
         * @param mintAmount Amount of debt tokens to mint
         * @param debtTradeMin Minimum amount of debt tokens to receive to protect from slippage
+        * @param swapParams Parameters for the swap (curve or else)
     */
     function leverage(uint clampedDeposit,
                       uint flashLoanAmount,
                       uint underlyingDepositMin,
                       uint mintAmount,
-                      uint debtTradeMin) public {
+                      uint debtTradeMin,
+                      bytes memory swapParams) public {
         require(clampedDeposit > 0, "Vault is full");
         TransferHelper.safeTransferFrom(underlyingToken, msg.sender, address(this), clampedDeposit);
 
@@ -268,7 +270,8 @@ abstract contract Leverager is ILeverager, Ownable {
                                    flashLoanAmount,
                                    underlyingDepositMin,
                                    mintAmount,
-                                   debtTradeMin);
+                                   debtTradeMin,
+                                   swapParams);
         }
         //the dust should get transmitted back to msg.sender but it might not be worth the gas...
     }
@@ -326,13 +329,14 @@ abstract contract Leverager is ILeverager, Ownable {
                                 uint flashLoanAmount,
                                 uint burnAmount,
                                 uint debtTradeMin,
-                                uint minUnderlyingOut) public {
+                                uint minUnderlyingOut,
+                                bytes memory swapParams) public {
         require(shares > 0, "must include shares to withdraw");
         require(shares <= getTotalWithdrawCapacity(msg.sender), "shares exceeds capacity");
         if(burnAmount == 0) {
             alchemist.withdrawUnderlyingFrom(msg.sender, yieldToken, shares, msg.sender, minUnderlyingOut);
         } else {
-           _withdrawUnderlyingWithBurn(shares, flashLoanAmount, burnAmount, debtTradeMin, minUnderlyingOut);
+           _withdrawUnderlyingWithBurn(shares, flashLoanAmount, burnAmount, debtTradeMin, minUnderlyingOut, swapParams);
         }
     }
 
@@ -347,7 +351,8 @@ abstract contract Leverager is ILeverager, Ownable {
     */
     function leverageAtomic(uint depositAmount,
                             uint32 underlyingSlippageBasisPoints,
-                            uint32 debtSlippageBasisPoints) external override {
+                            uint32 debtSlippageBasisPoints,
+                            bytes memory swapParams) external override {
         (uint clampedDeposit,
          uint flashLoanAmount,
          uint underlyingDepositMin,
@@ -355,7 +360,7 @@ abstract contract Leverager is ILeverager, Ownable {
          uint debtTradeMin) = getLeverageParameters(depositAmount,
                                                     underlyingSlippageBasisPoints,
                                                     debtSlippageBasisPoints);
-        leverage(clampedDeposit, flashLoanAmount, underlyingDepositMin, mintAmount, debtTradeMin);
+        leverage(clampedDeposit, flashLoanAmount, underlyingDepositMin, mintAmount, debtTradeMin, swapParams);
     }
 
     /**
@@ -372,11 +377,12 @@ abstract contract Leverager is ILeverager, Ownable {
                                uint flashLoanAmount,
                                uint underlyingDepositMin,
                                uint mintAmount,
-                               uint debtTradeMin) internal {
+                               uint debtTradeMin,
+                               bytes memory swapParams) internal {
         uint totalDeposit = clampedDeposit + flashLoanAmount;
         _depositUnderlying(totalDeposit, underlyingDepositMin, depositor);
         _mintDebtTokens(mintAmount, depositor);
-        _swapDebtTokens(mintAmount, debtTradeMin);
+        _swapDebtTokens(mintAmount, debtTradeMin, swapParams);
         _repayFlashLoan(flashLoanAmount);
     }
 
@@ -465,14 +471,15 @@ abstract contract Leverager is ILeverager, Ownable {
     */
     function withdrawUnderlyingAtomic(uint shares,
                                       uint32 underlyingSlippageBasisPoints,
-                                      uint32 debtSlippageBasisPoints) external override {
+                                      uint32 debtSlippageBasisPoints,
+                                      bytes memory swapParams) external override {
         (uint flashLoanAmount,
          uint burnAmount,
          uint debtTradeMin,
          uint minUnderlyingOut) = getWithdrawUnderlyingParameters(shares,
                                                                   underlyingSlippageBasisPoints,
                                                                   debtSlippageBasisPoints);
-        withdrawUnderlying(shares, flashLoanAmount, burnAmount, debtTradeMin, minUnderlyingOut);
+        withdrawUnderlying(shares, flashLoanAmount, burnAmount, debtTradeMin, minUnderlyingOut, swapParams);
     }
 
     /**
@@ -486,8 +493,9 @@ abstract contract Leverager is ILeverager, Ownable {
                                 uint flashLoanAmount,
                                 uint burnAmount,
                                 uint debtTradeMin,
-                                uint minUnderlyingOut) internal {
-        _swapToDebtTokens(flashLoanAmount, debtTradeMin);
+                                uint minUnderlyingOut,
+                                bytes memory swapParams) internal {
+        _swapToDebtTokens(flashLoanAmount, debtTradeMin, swapParams);
         _burnDebt(burnAmount, depositor);
         _withdrawUnderlying(depositor, shares, minUnderlyingOut);
         _repayFlashLoan(flashLoanAmount);

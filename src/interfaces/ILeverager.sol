@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 
-pragma solidity 0.8.19;
+pragma solidity 0.8.26;
 
 interface ILeverager {
     event DepositUnderlying(address indexed underlyingToken, uint256 sent, uint256 credited);
@@ -20,8 +20,8 @@ interface ILeverager {
     function getLeverageParameters(uint depositAmount, uint32 underlyingSlippageBasisPoints, uint32 debtSlippageBasisPoints) external view returns(uint clampedDeposit, uint flashLoanAmount, uint underlyingDepositMin, uint mintAmount, uint debtTradeMin);
     function getWithdrawUnderlyingParameters(uint shares, uint32 underlyingSlippageBasisPoints, uint32 debtSlippageBasisPoints) external view returns(uint flashLoanAmount, uint burnAmount, uint debtTradeMin, uint minUnderlyingOut);
 
-    function leverage(uint clampedDeposit, uint flashLoanAmount, uint underlyingDepositMin, uint mintAmount, uint debtTradeMin) external;
-    function leverageAtomic(uint depositAmount, uint32 underlyingSlippageBasisPoints, uint32 debtSlippageBasisPoints) external;
-    function withdrawUnderlying(uint shares, uint flashLoanAmount, uint burnAmount, uint debtTradeMin, uint minUnderlyingOut) external;
-    function withdrawUnderlyingAtomic(uint shares, uint32 underlyingSlippageBasisPoints, uint32 debtSlippageBasisPoints) external;
+    function leverage(uint clampedDeposit, uint flashLoanAmount, uint underlyingDepositMin, uint mintAmount, uint debtTradeMin, bytes memory swapParams) external;
+    function leverageAtomic(uint depositAmount, uint32 underlyingSlippageBasisPoints, uint32 debtSlippageBasisPoints, bytes memory swapParams) external;
+    function withdrawUnderlying(uint shares, uint flashLoanAmount, uint burnAmount, uint debtTradeMin, uint minUnderlyingOut, bytes memory swapParams) external;
+    function withdrawUnderlyingAtomic(uint shares, uint32 underlyingSlippageBasisPoints, uint32 debtSlippageBasisPoints, bytes memory swapParams) external;
 }

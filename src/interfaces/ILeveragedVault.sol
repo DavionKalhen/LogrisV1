@@ -2,7 +2,7 @@
 
 import "./IERC4626.sol";
 
-pragma solidity ^0.8.0;
+pragma solidity 0.8.26;
 
 interface ILeveragedVault is IERC4626 {
     event DepositUnderlying(address indexed sender, address indexed underlyingToken, uint256 amount);
@@ -28,6 +28,6 @@ interface ILeveragedVault is IERC4626 {
 
     function depositUnderlying(uint amount) external returns(uint shares);
     function depositUnderlying() external payable returns(uint shares);
-    function leverage(uint clampedDeposit, uint flashLoanAmount, uint underlyingDepositMin, uint mintAmount, uint debtTradeMin) external;
-    function withdrawUnderlying(uint shares, uint flashLoanAmount, uint burnAmount, uint debtTradeMin, uint minUnderlyingOut) external returns(uint amount);
+    function leverage(uint clampedDeposit, uint flashLoanAmount, uint underlyingDepositMin, uint mintAmount, uint debtTradeMin, bytes memory swapParams) external;
+    function withdrawUnderlying(uint shares, uint flashLoanAmount, uint burnAmount, uint debtTradeMin, uint minUnderlyingOut, bytes memory swapParams) external returns(uint amount);
 }

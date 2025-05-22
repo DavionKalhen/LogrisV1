@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 
-pragma solidity ^0.8.0;
+pragma solidity 0.8.26;
 
 interface IAlchemixV1Leverage {
     event Leverage(address indexed user, address indexed token, uint256 amount);
