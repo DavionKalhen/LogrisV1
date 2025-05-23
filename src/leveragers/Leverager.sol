@@ -9,6 +9,7 @@ import "../interfaces/wETH/IWETH.sol";
 import "../interfaces/IDebtTokenAdapter.sol";
 import "../interfaces/alchemist/ITokenAdapter.sol";
 import "../interfaces/uniswap/TransferHelper.sol";
+import "../AlchemixV3DebtAdapter.sol";
 
 abstract contract Leverager is ILeverager, Ownable {
     address public yieldToken;
@@ -222,13 +223,14 @@ abstract contract Leverager is ILeverager, Ownable {
     }
 
     /**
-        * @notice Deposit underlying tokens in debt adapter on behalf of the depositor
+        * @notice Deposit underlying tokens in debt adapter
         * @param depositor Address of depositor
         * @param clampedDeposit Amount of underlying tokens to deposit
         * @param flashLoanAmount Amount of underlying tokens to borrow
         * @param underlyingDepositMin Minimum amount of yield tokens to receive
         * @param mintAmount Amount of debt tokens to mint
         * @param debtTradeMin Minimum amount of debt tokens to receive to protect from slippage
+        * @param swapParams Parameters for the swap (curve or else)
     */
     function _flashLoanDeposit(address depositor,
                                uint clampedDeposit,
@@ -237,6 +239,15 @@ abstract contract Leverager is ILeverager, Ownable {
                                uint mintAmount,
                                uint debtTradeMin,
                                bytes memory swapParams) internal {
+        // Ensure position exists if using AlchemixV3DebtAdapter
+        if (address(debtAdapter).code.length > 0) {
+            try AlchemixV3DebtAdapter(address(debtAdapter)).getOrCreatePositionId(depositor) returns (uint256) {
+                // Position exists or was created successfully
+            } catch {
+                // Fallback - not AlchemixV3DebtAdapter or other error
+            }
+        }
+        
         uint totalDeposit = clampedDeposit + flashLoanAmount;
         _depositUnderlying(totalDeposit, underlyingDepositMin, depositor);
         _mintDebtTokens(mintAmount, depositor);
@@ -280,13 +291,15 @@ abstract contract Leverager is ILeverager, Ownable {
         * @param _sender Address of depositor
     */
     function _mintDebtTokens(uint mintAmount, address _sender) internal {
-        //this needs to be accountd for in calculate flash loan
-        // (uint maxMintable, ,) = debtAdapter.getMintLimitInfo();
-        // if (amount > maxMintable) {
-        //     //mint as much as possible.
-        //     amount = maxMintable;
-        // }
-        //Mint Debt Tokens
+        // Ensure position exists if using AlchemixV3DebtAdapter
+        if (address(debtAdapter).code.length > 0) {
+            try AlchemixV3DebtAdapter(address(debtAdapter)).getOrCreatePositionId(_sender) returns (uint256) {
+                // Position exists or was created successfully
+            } catch {
+                // Fallback - not AlchemixV3DebtAdapter or other error
+            }
+        }
+        
         debtAdapter.mintFrom(_sender, mintAmount, address(this));
         emit Mint(yieldToken, mintAmount);
     }
@@ -342,6 +355,10 @@ abstract contract Leverager is ILeverager, Ownable {
         * @param depositor Address of depositor
         * @param shares Amount of shares to withdraw
         * @param flashLoanAmount Amount of underlying tokens to borrow
+        * @param burnAmount Amount of debt tokens to burn
+        * @param debtTradeMin Minimum amount of debt tokens to receive
+        * @param minUnderlyingOut Minimum amount of underlying tokens to receive
+        * @param swapParams Parameters for the swap (curve or else)
     */
     function _flashLoanWithdraw(address depositor,
                                 uint shares,
@@ -350,6 +367,15 @@ abstract contract Leverager is ILeverager, Ownable {
                                 uint debtTradeMin,
                                 uint minUnderlyingOut,
                                 bytes memory swapParams) internal {
+        // Ensure position exists if using AlchemixV3DebtAdapter
+        if (address(debtAdapter).code.length > 0) {
+            try AlchemixV3DebtAdapter(address(debtAdapter)).getPositionId(depositor) returns (uint256 tokenId) {
+                require(tokenId > 0, "No position found for depositor");
+            } catch {
+                // Fallback - not AlchemixV3DebtAdapter or other error
+            }
+        }
+        
         _swapToDebtTokens(flashLoanAmount, debtTradeMin, swapParams);
         _burnDebt(burnAmount, depositor);
         _withdrawUnderlying(depositor, shares, minUnderlyingOut);
@@ -364,6 +390,15 @@ abstract contract Leverager is ILeverager, Ownable {
         * @param depositor Address of depositor
     */
     function _burnDebt(uint burnAmount, address depositor) internal {
+        // For AlchemixV3, ensure we have a valid position for the depositor
+        if (address(debtAdapter).code.length > 0) {
+            try AlchemixV3DebtAdapter(address(debtAdapter)).getPositionId(depositor) returns (uint256 tokenId) {
+                require(tokenId > 0, "No position found for depositor");
+            } catch {
+                // Fallback - not AlchemixV3DebtAdapter or other error
+            }
+        }
+        
         IERC20 token = IERC20(debtToken);
         token.approve(address(debtAdapter), burnAmount);
         debtAdapter.burn(burnAmount, depositor);

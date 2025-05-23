@@ -5,6 +5,7 @@ pragma solidity 0.8.26;
 import "./CurveLeverager.sol";
 import "../interfaces/balancer/IFlashLoanRecipient.sol";
 import "../interfaces/balancer/IVault.sol";
+import "../AlchemixV3DebtAdapter.sol";
 
 contract BalancerCurveLeverager is CurveLeverager, IFlashLoanRecipient{
     IVault vault = IVault(0xBA12222222228d8Ba445958a75a0704d566BF2C8);
@@ -82,6 +83,16 @@ contract BalancerCurveLeverager is CurveLeverager, IFlashLoanRecipient{
          uint param4,
          uint param5,
          bytes memory params) = abi.decode(userData, (address, bool, uint, uint, uint, uint, uint, bytes));
+        
+        // When using Alchemix V3, ensure a position exists for this depositor
+        if (address(debtAdapter).code.length > 0) {
+            try AlchemixV3DebtAdapter(address(debtAdapter)).getOrCreatePositionId(depositor) returns (uint256) {
+                // Position exists or was created successfully
+            } catch {
+                // Fallback - not AlchemixV3DebtAdapter or other error
+            }
+        }
+        
         if(depositFlag) {
             _flashLoanDeposit(depositor, param1, param2, param3, param4, param5, params);
         } else {
