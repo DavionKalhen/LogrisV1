@@ -6,7 +6,6 @@ import "./interfaces/ILeveragedVaultFactory.sol";
 import "./LeveragedVault.sol";
 import "lib/openzeppelin-contracts/contracts/utils/ReentrancyGuard.sol";
 import "lib/openzeppelin-contracts/contracts/access/Ownable.sol";
-import "forge-std/console.sol";
 
 contract LeveragedVaultFactory is ILeveragedVaultFactory, ReentrancyGuard, Ownable {   
     mapping (address => address) public vaults;
@@ -18,7 +17,7 @@ contract LeveragedVaultFactory is ILeveragedVaultFactory, ReentrancyGuard, Ownab
                          address yieldToken,
                          address underlyingToken,
                          address leverager,
-                         address alchemistV2,
+                         address debtSource,
                          uint32 underlyingSlippageBasisPoints,
                          uint32 debtSlippageBasisPoints) external onlyOwner returns (address vault) {
         require(vaults[yieldToken] == address(0), "Vault already exists");
@@ -29,7 +28,7 @@ contract LeveragedVaultFactory is ILeveragedVaultFactory, ReentrancyGuard, Ownab
                                            yieldToken,
                                            underlyingToken,
                                            leverager,
-                                           alchemistV2,
+                                           debtSource,
                                            underlyingSlippageBasisPoints,
                                            debtSlippageBasisPoints));
         vaults[yieldToken] = vault;

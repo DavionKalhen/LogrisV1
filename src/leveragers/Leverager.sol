@@ -6,18 +6,15 @@ import "../interfaces/ILeverager.sol";
 import "lib/openzeppelin-contracts/contracts/access/Ownable.sol";
 import "lib/openzeppelin-contracts/contracts/token/ERC20/IERC20.sol";
 import "../interfaces/wETH/IWETH.sol";
-import "../interfaces/alchemist/IAlchemistV2.sol";
+import "../interfaces/IDebtTokenAdapter.sol";
 import "../interfaces/alchemist/ITokenAdapter.sol";
 import "../interfaces/uniswap/TransferHelper.sol";
-
-//import console log
-import "forge-std/console.sol";
 
 abstract contract Leverager is ILeverager, Ownable {
     address public yieldToken;
     address public underlyingToken;
     address public debtToken;
-    IAlchemistV2 public alchemist = IAlchemistV2(0x062Bf725dC4cDF947aa79Ca2aaCCD4F385b13b5c);
+    IDebtTokenAdapter public debtAdapter;
     
     
     uint256 constant FIXED_POINT_SCALAR = 1e18;
@@ -25,11 +22,13 @@ abstract contract Leverager is ILeverager, Ownable {
 
     constructor(address _yieldToken,
     address _underlyingToken,
-    address _debtToken)
+    address _debtToken,
+    address _debtAdapter)
     Ownable(msg.sender) {
         yieldToken = _yieldToken;
         underlyingToken = _underlyingToken;
         debtToken = _debtToken;
+        debtAdapter = IDebtTokenAdapter(_debtAdapter);
     }
 
     /// @dev this function needs to be implemented in the inheriting contract
@@ -48,8 +47,8 @@ abstract contract Leverager is ILeverager, Ownable {
      */
     function getDepositedBalance(address _depositor) public view override returns(uint amount) {
         //last accrued weight appears to be unrealized borrowCapacity denominated in debt tokens
-        (uint256 shares,) = alchemist.positions(_depositor, yieldToken);
-        amount = alchemist.convertSharesToUnderlyingTokens(yieldToken, shares);
+        (uint256 shares,) = debtAdapter.positions(_depositor, yieldToken);
+        amount = debtAdapter.convertSharesToUnderlyingTokens(yieldToken, shares);
     }
 
     /**
@@ -58,7 +57,7 @@ abstract contract Leverager is ILeverager, Ownable {
         * @return amount of debt tokens
      */
     function getDebtBalance(address _depositor) public view override returns(int256 amount) {
-        (amount,) = alchemist.accounts(_depositor);
+        (amount,) = debtAdapter.accounts(_depositor);
     }
 
     function abs(int256 x) internal pure returns (uint256) {
@@ -76,7 +75,7 @@ abstract contract Leverager is ILeverager, Ownable {
     function getRedeemableBalance(address _depositor) public view override returns(uint amount) {
         uint depositBalance = getDepositedBalance(_depositor);     
         int256 debtBalance = getDebtBalance(_depositor);
-        uint256 debtOrCredit = alchemist.normalizeDebtTokensToUnderlying(underlyingToken, abs(debtBalance));
+        uint256 debtOrCredit = debtAdapter.normalizeDebtTokensToUnderlying(underlyingToken, abs(debtBalance));
         // using a conditional here to avoid sign operations on uints
         if(debtBalance < 0) {
             return depositBalance + debtOrCredit;
@@ -86,13 +85,13 @@ abstract contract Leverager is ILeverager, Ownable {
     }
 
     /**
-        * @notice Checks the remaining capacity of the alchemist vault
-        * @return amount amount of underlying tokens that can be deposited in the alchemist vault
+        * @notice Checks the remaining capacity of the debt adapter vault
+        * @return amount amount of underlying tokens that can be deposited in the vault
     */
     function getDepositCapacity() public view override returns(uint amount) {
-        IAlchemistV2.YieldTokenParams memory params = alchemist.getYieldTokenParameters(yieldToken);
-        if(params.maximumExpectedValue >= params.expectedValue)
-            amount = params.maximumExpectedValue - params.expectedValue;
+        (uint256 expectedValue, uint256 maximumExpectedValue,,) = debtAdapter.getYieldTokenParameters(yieldToken);
+        if(maximumExpectedValue >= expectedValue)
+            amount = maximumExpectedValue - expectedValue;
         else
             amount = 0;
     }
@@ -103,11 +102,11 @@ abstract contract Leverager is ILeverager, Ownable {
         * @return amount Amount of underlying tokens that can be borrowed
     */
     function getBorrowCapacity(address _depositor) public view override returns(uint amount) {
-        uint256 minimumCollateralization = alchemist.minimumCollateralization();//includes 1e18
+        uint256 minimumCollateralization = debtAdapter.minimumCollateralization();//includes 1e18
         uint depositBalance = getDepositedBalance(_depositor);     
         int256 debtBalance = getDebtBalance(_depositor);
         uint256 debtAdjustedBalance = 0;
-        uint256 debtOrCredit = alchemist.normalizeDebtTokensToUnderlying(underlyingToken, abs(debtBalance));
+        uint256 debtOrCredit = debtAdapter.normalizeDebtTokensToUnderlying(underlyingToken, abs(debtBalance));
         uint256 debtOrCreditAdj = debtOrCredit * minimumCollateralization / FIXED_POINT_SCALAR;
 
         // using a conditional here to avoid sign operations on uints
@@ -123,88 +122,39 @@ abstract contract Leverager is ILeverager, Ownable {
     /**
         * @notice Returns the amount of depositor shares that can be withdrawn from the vault
         * @param _depositor Address of depositor
-        * @return shares Amount of alchemist shares
+        * @return shares Amount of adapter shares
     */
     function getTotalWithdrawCapacity(address _depositor) public view override returns (uint shares) {
-        (shares,) = alchemist.positions(_depositor, yieldToken);
+        (shares,) = debtAdapter.positions(_depositor, yieldToken);
         return shares;
     }
 
     /**
         * @notice Returns the amount of depositor shares that can be withdrawn from the vault without liquidating debt
         * @param _depositor Address of depositor
-        * @return shares Amount of alchemist shares
+        * @return shares Amount of adapter shares
     */
     function getFreeWithdrawCapacity(address _depositor) public view override returns(uint shares) {
-        uint256 minimumCollateralization = alchemist.minimumCollateralization();//includes 1e18
+        uint256 minimumCollateralization = debtAdapter.minimumCollateralization();//includes 1e18
 
-        (uint256 totalShares,) = alchemist.positions(_depositor, yieldToken);
+        (uint256 totalShares,) = debtAdapter.positions(_depositor, yieldToken);
         int256 debtBalance = getDebtBalance(_depositor);
         uint clampedDebt = (debtBalance <= 0) ? 0: uint(debtBalance);
-        uint debtShares = alchemist.normalizeDebtTokensToUnderlying(underlyingToken, clampedDebt)
+        uint debtShares = debtAdapter.normalizeDebtTokensToUnderlying(underlyingToken, clampedDebt)
                           * minimumCollateralization / FIXED_POINT_SCALAR;
 
         shares = totalShares - debtShares;
     }
 
     /**
-        * @notice Returns the amount of alchemist shares that corresponds to the amount of tokens
+        * @notice Returns the amount of adapter shares that corresponds to the amount of tokens
         * @param amount Amount of underlying tokens to convert
-        * @return shares Amount of alchemist shares
+        * @return shares Amount of adapter shares
     */
     function convertUnderlyingTokensToShares(uint256 amount) external view override returns (uint shares) {
-        shares = alchemist.convertUnderlyingTokensToShares(yieldToken, amount);
+        shares = debtAdapter.convertUnderlyingTokensToShares(yieldToken, amount);
     }
 
-    /*  This is going to be a meaty calculation.
-        All we are using to repay the flashloan is the exchanged debt
-        We can always flash loan more than we need but the idea is to deposit everything we flash loan
-        This means we need to flash loan less than the amount to be deposited (slippage)
-        Further we need to account for existing borrowCapacity (which lets us flash more)
-        And account for debt peg deviation + debt to underlying slippage
-        The flashloanAmount=mintableDebtAfterDeposit*debtToUnderlyingTradeRatio*slippage
-        mintableDebtAfterDeposit=mintableDebtBeforeDeposit+changeInMintableDebtFromDeposit
-        changeInMintableDebtFromDeposit=(depositAmount+flashloanAmount)*underlyingToYieldTradeRatio*slippage/2
-
-        e.g. deposit 10 ETH
-        plan would be to flashloan 10 ETH but the slippage is 1% so we only get 19.8 ETH of borrowCapacity
-        Further the alETH peg is at .98 so despite being able to mint 9.9 alETH
-        We only get 9.702 wETH out pre-slippage.
-        With another 1% trade slippage we're at 9.60498 wETH we can use to repay the flashloan.
-        Obviously if you borrowed 10, 9.60498 isn't enough to repay that.
-        So we have to borrow less.
-
-        We need to follow the algebra above to basically calculate the entire expected flow right here
-        Then pass those values down through the stack as the minOutput values to depositUnderlying and exchange
-        e.g.
-        deposit amount ETH                                              10
-        borrow X ETH
-        deposit amount+X ETH                                            10+x
-        receive (amount+X)*underlyingSlippage borrowCapacity                    .99*(10+x)
-        borrow ((amount+X)*underlyingSlippage)/2+borrowCapacity alETH           (.99*(10+x)/2)+borrowCapacity
-        trade borrow alETH for debtToUnderlyingRatio*debtSlippage       .99*.98*((.99*(10+x)/2)+borrowCapacity)
-        repay Y ETH
-        amount borrowed = X
-        amount repayed = Y
-        Y=X
-
-        debtTradeLoss = debtToUnderlyingRatio * debtSlippage
-        depositTradeLoss = underlyingSlippage
-        totalTradeLoss = debtTradeLoss*depositTradeLoss
-
-        x=debtTradeLoss*((underlyingSlippage*(deposit+x)/2)+borrowCapacity),              read as debtTradeLoss * (borrowAmountFromDeposits+existingBorrowCapacity)
-        x=totalTradeLoss*(deposit+x)/2+debtTradeLoss*borrowCapacity                       multiplying the debtTradeLoss loss into deposit and borrowCapacity
-        x=(totalTradeLoss*deposit+totalTradeLoss*x)/2+debtTradeLoss*borrowCapacity        multiplying the depositTradeLoss into the deposit and flash loan values
-        2x=(totalTradeLoss*deposit)+(totalTradeLoss*x)+2*debtTradeLoss*borrowCapacity     multipying by 2
-        2x-(totalTradeLoss*x)=(totalTradeLoss*deposit)+2*debtTradeLoss*borrowCapacity     moved x from rhs to lhs
-        (2-totalTradeLoss)*x=(totalTradeLoss*deposit)+2*debtTradeLoss*borrowCapacity      factor x out
-        x=((totalTradeLoss*deposit)+2*debtTradeLoss*borrowCapacity)/(2-(totalTradeLoss))  divide to solve for x
-
-        flashLoanAmount = ((totalTradeLoss*depositAmount)+(collateralizationRatio*debtTradeLoss*borrowCapacity))/(collateralizationRatio-totalTradeLoss)
-        minDepositUnderlyingAmount = (depositAmount+flashLoanAmount)*underlyingSlippage
-        mintAmount = (minDepositUnderlyingAmount/2)+borrowCapacity
-        minDebtTradeAmount = mintAmount*debtToUnderlyingRatio*debtSlippage
-    */
     function getLeverageParameters(uint depositAmount,
                                    uint32 underlyingSlippageBasisPoints,
                                    uint32 debtSlippageBasisPoints) public view override returns(uint clampedDeposit,
@@ -216,36 +166,32 @@ abstract contract Leverager is ILeverager, Ownable {
         if(depositCapacity <= depositAmount) {
             clampedDeposit = depositCapacity;
             underlyingDepositMin = _basisPointAdjustment(
-                alchemist.convertUnderlyingTokensToYield(yieldToken, clampedDeposit),
+                debtAdapter.convertUnderlyingTokensToYield(yieldToken, clampedDeposit),
                 underlyingSlippageBasisPoints);
         }
         else {
             clampedDeposit = depositAmount;
             uint borrowCapacity = getBorrowCapacity(msg.sender);
-            console.log("borrowCapacity:", borrowCapacity);
             flashLoanAmount = _calculateFlashLoanAmount(depositAmount,
                                                         underlyingSlippageBasisPoints,
                                                         debtSlippageBasisPoints,
                                                         borrowCapacity,
-                                                        alchemist.minimumCollateralization());
-            console.log("flashLoanAmount: ", flashLoanAmount);
+                                                        debtAdapter.minimumCollateralization());
             if(depositAmount + flashLoanAmount > depositCapacity) {
                 flashLoanAmount = depositCapacity - depositAmount;
             }
             //denominated in yield
             underlyingDepositMin = _basisPointAdjustment(
-                alchemist.convertUnderlyingTokensToYield(yieldToken, depositAmount + flashLoanAmount),
+                debtAdapter.convertUnderlyingTokensToYield(yieldToken, depositAmount + flashLoanAmount),
                                                          underlyingSlippageBasisPoints);
-            console.log("underlying deposit min (in yield): ", underlyingDepositMin);
-            mintAmount = borrowCapacity + (alchemist.convertYieldTokensToUnderlying(yieldToken, underlyingDepositMin)
-                                           * FIXED_POINT_SCALAR / alchemist.minimumCollateralization());
-            console.log("mint amount:", mintAmount);
+            mintAmount = borrowCapacity + (debtAdapter.convertYieldTokensToUnderlying(yieldToken, underlyingDepositMin)
+                                           * FIXED_POINT_SCALAR / debtAdapter.minimumCollateralization());
             debtTradeMin = _basisPointAdjustment(mintAmount, debtSlippageBasisPoints);
         }
     }
 
     /**
-        * @notice Deposit underlying tokens in alchemist
+        * @notice Deposit underlying tokens in debt adapter
         * @param clampedDeposit Amount of underlying tokens to deposit
         * @param flashLoanAmount Amount of underlying tokens to borrow
         * @param underlyingDepositMin Minimum amount of yield tokens to receive
@@ -263,7 +209,6 @@ abstract contract Leverager is ILeverager, Ownable {
         TransferHelper.safeTransferFrom(underlyingToken, msg.sender, address(this), clampedDeposit);
 
         if(flashLoanAmount == 0) {
-            console.log("Basic deposit");
             _depositUnderlying(clampedDeposit, underlyingDepositMin, msg.sender);
         } else {
             _leverageWithFlashLoan(clampedDeposit,
@@ -276,95 +221,8 @@ abstract contract Leverager is ILeverager, Ownable {
         //the dust should get transmitted back to msg.sender but it might not be worth the gas...
     }
 
-    /*  While there is a liquidate call it can't be called on someone else's behalf which makes this more complicated.
-        Unlike everything else on Alchemist there is no liquidateFrom so we have to flashloan to unwind the leverage.
-        Basically this makes this the reverse of depositing with leverage.
-
-        Assuming we have a withdraw share amount needed after shares available for withdraw:
-        We need to repay repayAmount to free up withdrawShares
-        e.g.
-        flash loan X
-        trade X for debt                                    receive flashLoanAmount*debtTradeLoss underlying
-        burn debt freeing up Y shares                       receive debt*2 withdrawable      
-        Withdraw Y shares to underlying                     receive withdrawable*underlyingSlippage underlying
-        repay X, keep Y profit
-
-        debtTradeLoss = debtToUnderlyingRatio * debtSlippage
-        withdrawTradeLoss = underlyingSlippage
-
-        To free Y shares, you need to burn debtAmount=Y*sharesPerUnderlying/collateralization 
-        To get debtAmount you need to borrow flashLoanAmount*debtTradeLoss
-        therefore Y*sharesPerUnderlying/collateralization = flashLoanAmount*debtTradeLoss
-        flashLoanAmount=Y*sharesPerUnderlying/(collateralization*debtTradeLoss)
-    */
-    function getWithdrawUnderlyingParameters(uint shares,
-                                             uint32 underlyingSlippageBasisPoints,
-                                             uint32 debtSlippageBasisPoints) public view override
-    returns(uint flashLoanAmount, uint burnAmount, uint debtTradeMin, uint minUnderlyingOut) {
-        uint freeShares = getFreeWithdrawCapacity(msg.sender);
-        if(shares <= freeShares) {
-            console.log("simple withdraw");
-            minUnderlyingOut = _basisPointAdjustment(shares, underlyingSlippageBasisPoints);
-        } else {
-            uint remainingShares = shares - freeShares;
-            uint debtTradeLoss =  _basisPointAdjustment(1 ether, debtSlippageBasisPoints);
-
-            flashLoanAmount = alchemist.convertSharesToUnderlyingTokens(yieldToken, remainingShares)
-                              * 1e36 / (alchemist.minimumCollateralization() * debtTradeLoss);
-            burnAmount = _basisPointAdjustment(flashLoanAmount, debtSlippageBasisPoints);
-            debtTradeMin = burnAmount;
-            minUnderlyingOut = _basisPointAdjustment(flashLoanAmount - burnAmount, underlyingSlippageBasisPoints);
-        }
-    }
-
     /**
-        * @notice Withdraw underlying tokens from alchemist
-        * @param shares Amount of shares to withdraw
-        * @param flashLoanAmount Amount of underlying tokens to borrow
-        * @param burnAmount Amount of debt tokens to burn
-        * @param debtTradeMin Minimum amount of debt tokens to receive to protect from slippage
-        * @param minUnderlyingOut Minimum amount of underlying tokens to receive to protect from slippage
-    */
-    function withdrawUnderlying(uint shares,
-                                uint flashLoanAmount,
-                                uint burnAmount,
-                                uint debtTradeMin,
-                                uint minUnderlyingOut,
-                                bytes memory swapParams) public {
-        require(shares > 0, "must include shares to withdraw");
-        require(shares <= getTotalWithdrawCapacity(msg.sender), "shares exceeds capacity");
-        if(burnAmount == 0) {
-            alchemist.withdrawUnderlyingFrom(msg.sender, yieldToken, shares, msg.sender, minUnderlyingOut);
-        } else {
-           _withdrawUnderlyingWithBurn(shares, flashLoanAmount, burnAmount, debtTradeMin, minUnderlyingOut, swapParams);
-        }
-    }
-
-    /**
-        * @notice Fills up as much vault capacity as possible using leverage.
-        * @dev This method is convenient and unlikely to revert but is vulnerable to sandwich attacks.
-        * @param depositAmount Max amount of underlying token to use as the base deposit
-        * @param underlyingSlippageBasisPoints Slippage tolerance when trading underlying to yield token.
-        * Must include basis points for peg deviations.
-        * @param debtSlippageBasisPoints Slippage tolerance when trading debt to underlying token.
-        * Does not account for debt peg deviations.
-    */
-    function leverageAtomic(uint depositAmount,
-                            uint32 underlyingSlippageBasisPoints,
-                            uint32 debtSlippageBasisPoints,
-                            bytes memory swapParams) external override {
-        (uint clampedDeposit,
-         uint flashLoanAmount,
-         uint underlyingDepositMin,
-         uint mintAmount,
-         uint debtTradeMin) = getLeverageParameters(depositAmount,
-                                                    underlyingSlippageBasisPoints,
-                                                    debtSlippageBasisPoints);
-        leverage(clampedDeposit, flashLoanAmount, underlyingDepositMin, mintAmount, debtTradeMin, swapParams);
-    }
-
-    /**
-        * @notice Deposit underlying tokens in alchemist on behalf of the depositor
+        * @notice Deposit underlying tokens in debt adapter on behalf of the depositor
         * @param depositor Address of depositor
         * @param clampedDeposit Amount of underlying tokens to deposit
         * @param flashLoanAmount Amount of underlying tokens to borrow
@@ -405,33 +263,31 @@ abstract contract Leverager is ILeverager, Ownable {
     }
 
     /**
-        * @notice Deposit underlying tokens in alchemist
+        * @notice Deposit underlying tokens in debt adapter
         * @param amount Amount of underlying tokens to deposit
         * @param minAmountOut Minimum amount of yield tokens to receive
         * @param _sender Address of depositor
     */
     function _depositUnderlying(uint amount, uint minAmountOut, address _sender) internal {
-        IERC20(underlyingToken).approve(address(alchemist), amount);
-        console.log("Deposit underlying: ", amount);
-        uint shares = alchemist.depositUnderlying(yieldToken, amount, _sender, minAmountOut);
-        emit DepositUnderlying(underlyingToken, amount, alchemist.convertSharesToUnderlyingTokens(yieldToken, shares));
+        IERC20(underlyingToken).approve(address(debtAdapter), amount);
+        uint shares = debtAdapter.depositUnderlying(yieldToken, amount, _sender, minAmountOut);
+        emit DepositUnderlying(underlyingToken, amount, debtAdapter.convertSharesToUnderlyingTokens(yieldToken, shares));
     }
 
     /**
-        * @notice Mint debt tokens in alchemist
+        * @notice Mint debt tokens in adapter
         * @param mintAmount Amount of debt tokens to mint
         * @param _sender Address of depositor
     */
     function _mintDebtTokens(uint mintAmount, address _sender) internal {
         //this needs to be accountd for in calculate flash loan
-        // (uint maxMintable, ,) = alchemist.getMintLimitInfo();
+        // (uint maxMintable, ,) = debtAdapter.getMintLimitInfo();
         // if (amount > maxMintable) {
         //     //mint as much as possible.
         //     amount = maxMintable;
         // }
         //Mint Debt Tokens
-        alchemist.mintFrom(_sender, mintAmount, address(this));
-        console.log("Minted: ", mintAmount);
+        debtAdapter.mintFrom(_sender, mintAmount, address(this));
         emit Mint(yieldToken, mintAmount);
     }
     
@@ -441,7 +297,6 @@ abstract contract Leverager is ILeverager, Ownable {
     */
     function _repayFlashLoan(uint amount) internal {
         TransferHelper.safeTransfer(underlyingToken, msg.sender, amount);
-        console.log("Repaid: ", amount);
     }
 
     /**
@@ -463,7 +318,7 @@ abstract contract Leverager is ILeverager, Ownable {
     }
 
     /**
-        * @notice Withdraw underlying tokens from alchemist
+        * @notice Withdraw underlying tokens from adapter
         * @dev This method is convenient and unlikely to revert but is vulnerable to sandwich attacks.
         * @param shares Amount of shares to withdraw
         * @param underlyingSlippageBasisPoints Slippage tolerance when trading underlying to yield token. Must include basis points for peg deviations.
@@ -483,7 +338,7 @@ abstract contract Leverager is ILeverager, Ownable {
     }
 
     /**
-        * @notice Withdraw underlying tokens from alchemist on behalf of the depositor
+        * @notice Withdraw underlying tokens from debt adapter on behalf of the depositor
         * @param depositor Address of depositor
         * @param shares Amount of shares to withdraw
         * @param flashLoanAmount Amount of underlying tokens to borrow
@@ -504,41 +359,104 @@ abstract contract Leverager is ILeverager, Ownable {
     }
 
     /**
-        * @notice Burn debt tokens in alchemist and credit the depositor
+        * @notice Burn debt tokens in adapter and credit the depositor
         * @param burnAmount Amount of debt tokens to burn
         * @param depositor Address of depositor
     */
     function _burnDebt(uint burnAmount, address depositor) internal {
         IERC20 token = IERC20(debtToken);
-        token.approve(address(alchemist), burnAmount);
-        alchemist.burn(burnAmount, depositor);
-        console.log("Burned: ", burnAmount, depositor);
+        token.approve(address(debtAdapter), burnAmount);
+        debtAdapter.burn(burnAmount, depositor);
         emit Burn(debtToken, burnAmount);
     }
 
     /**
-        * @notice Withdraw underlying tokens from alchemist on behalf of the depositor
+        * @notice Withdraw underlying tokens from adapter on behalf of the depositor
         * @param depositor Address of depositor
         * @param shares Amount of shares to withdraw
         * @param minUnderlyingOut Minimum amount of underlying tokens to receive to protect from slippage
     */
     function _withdrawUnderlying(address depositor, uint shares, uint minUnderlyingOut) internal {
-        uint underlying = alchemist.withdrawUnderlyingFrom(depositor,
+        uint underlying = debtAdapter.withdrawUnderlyingFrom(depositor,
                                                            yieldToken,
                                                            shares,
                                                            address(this),
                                                            minUnderlyingOut);
 
-        console.log("WithdrawUnderlying: ", shares, underlying);
         emit WithdrawUnderlying(underlyingToken, shares, underlying);
+    }
+
+    /**
+        * @notice need help understanding this
+    */
+    function getWithdrawUnderlyingParameters(uint shares,
+                                             uint32 underlyingSlippageBasisPoints,
+                                             uint32 debtSlippageBasisPoints) public view override
+    returns(uint flashLoanAmount, uint burnAmount, uint debtTradeMin, uint minUnderlyingOut) {
+        uint freeShares = getFreeWithdrawCapacity(msg.sender);
+        if(shares <= freeShares) {
+            minUnderlyingOut = _basisPointAdjustment(shares, underlyingSlippageBasisPoints);
+        } else {
+            uint remainingShares = shares - freeShares;
+            uint debtTradeLoss =  _basisPointAdjustment(1 ether, debtSlippageBasisPoints);
+
+            flashLoanAmount = debtAdapter.convertSharesToUnderlyingTokens(yieldToken, remainingShares)
+                              * 1e36 / (debtAdapter.minimumCollateralization() * debtTradeLoss);
+            burnAmount = _basisPointAdjustment(flashLoanAmount, debtSlippageBasisPoints);
+            debtTradeMin = burnAmount;
+            minUnderlyingOut = _basisPointAdjustment(flashLoanAmount - burnAmount, underlyingSlippageBasisPoints);
+        }
+    }
+
+    /**
+        * @notice Withdraw underlying tokens from adapter
+        * @param shares Amount of shares to withdraw
+        * @param flashLoanAmount Amount of underlying tokens to borrow
+        * @param burnAmount Amount of debt tokens to burn
+        * @param debtTradeMin Minimum amount of debt tokens to receive to protect from slippage
+        * @param minUnderlyingOut Minimum amount of underlying tokens to receive to protect from slippage
+    */
+    function withdrawUnderlying(uint shares,
+                                uint flashLoanAmount,
+                                uint burnAmount,
+                                uint debtTradeMin,
+                                uint minUnderlyingOut,
+                                bytes memory swapParams) public {
+        require(shares > 0, "must include shares to withdraw");
+        require(shares <= getTotalWithdrawCapacity(msg.sender), "shares exceeds capacity");
+        if(burnAmount == 0) {
+            debtAdapter.withdrawUnderlyingFrom(msg.sender, yieldToken, shares, msg.sender, minUnderlyingOut);
+        } else {
+           _withdrawUnderlyingWithBurn(shares, flashLoanAmount, burnAmount, debtTradeMin, minUnderlyingOut, swapParams);
+        }
+    }
+
+    /**
+        * @notice Fills up as much vault capacity as possible using leverage.
+        * @dev This method is convenient and unlikely to revert but is vulnerable to sandwich attacks.
+        * @param depositAmount Max amount of underlying token to use as the base deposit
+        * @param underlyingSlippageBasisPoints Slippage tolerance when trading underlying to yield token.
+        * Must include basis points for peg deviations.
+        * @param debtSlippageBasisPoints Slippage tolerance when trading debt to underlying token.
+        * Does not account for debt peg deviations.
+    */
+    function leverageAtomic(uint depositAmount,
+                            uint32 underlyingSlippageBasisPoints,
+                            uint32 debtSlippageBasisPoints,
+                            bytes memory swapParams) external override {
+        (uint clampedDeposit,
+         uint flashLoanAmount,
+         uint underlyingDepositMin,
+         uint mintAmount,
+         uint debtTradeMin) = getLeverageParameters(depositAmount,
+                                                    underlyingSlippageBasisPoints,
+                                                    debtSlippageBasisPoints);
+        leverage(clampedDeposit, flashLoanAmount, underlyingDepositMin, mintAmount, debtTradeMin, swapParams);
     }
 
     receive() external payable {
         if(msg.sender!=weth) {
             IWETH(weth).deposit{value: msg.value}();
-            console.log("WETH deposited: ", msg.value);
-        } else {
-            console.log("ETH unwrapped from wETH: ", msg.value);
         }
     }
 }

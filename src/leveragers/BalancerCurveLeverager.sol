@@ -5,16 +5,15 @@ pragma solidity 0.8.26;
 import "./CurveLeverager.sol";
 import "../interfaces/balancer/IFlashLoanRecipient.sol";
 import "../interfaces/balancer/IVault.sol";
-//import console log
-import "forge-std/console.sol";
 
 contract BalancerCurveLeverager is CurveLeverager, IFlashLoanRecipient{
     IVault vault = IVault(0xBA12222222228d8Ba445958a75a0704d566BF2C8);
 
     constructor(address _yieldToken,
     address _underlyingToken,
-    address _debtToken)
-    Leverager(_yieldToken, _underlyingToken, _debtToken) {
+    address _debtToken,
+    address _debtAdapter)
+    Leverager(_yieldToken, _underlyingToken, _debtToken, _debtAdapter) {
     }
 
     /// @inheritdoc Leverager

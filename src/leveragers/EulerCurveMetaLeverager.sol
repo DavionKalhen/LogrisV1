@@ -4,8 +4,6 @@ pragma solidity 0.8.26;
 import "./CurveLeverager.sol";
 import "../interfaces/euler/DToken.sol";
 import "../interfaces/euler/Markets.sol";
-//import console log
-import "forge-std/console.sol";
 
 contract EulerCurveMetaLeverager is CurveLeverager {
     address public flashLoanSender;//will be replaced by a calculation eventually
@@ -14,9 +12,10 @@ contract EulerCurveMetaLeverager is CurveLeverager {
     constructor(address _yieldToken,
                 address _underlyingToken,
                 address _debtToken,
+                address _debtAdapter,
                 address flashLoan,
                 address _flashLoanSender) 
-    Leverager(_yieldToken, _underlyingToken, _debtToken) {
+    Leverager(_yieldToken, _underlyingToken, _debtToken, _debtAdapter) {
         flashLoanSender = _flashLoanSender;
         markets = Markets(flashLoan);
     }
@@ -28,9 +27,7 @@ contract EulerCurveMetaLeverager is CurveLeverager {
                       uint mintAmount,
                       uint debtTradeMin,
                       bytes memory swapParams) internal override {
-        console.log("mop");
         address dTokenAddress = _getDTokenAddress();
-        console.log("plop");
         DToken dToken = DToken(dTokenAddress);
         bytes memory data = abi.encode(msg.sender,
                                         flashLoanSender,
@@ -81,9 +78,6 @@ contract EulerCurveMetaLeverager is CurveLeverager {
          bytes memory params) = abi.decode(data, (address, address, bool, uint, uint, uint, uint, uint, bytes));
         //We'd really like to find a way to flashloan while retaining msg.sender.
         //so that we don't need a mint allowance on alchemix to the leverager
-        console.log("msg.sender:", msg.sender);
-        console.log("sender:", sender);
-        console.log("flashLoanSender:", _flashLoanSender);
         require(msg.sender == _flashLoanSender, "callback caller must be flashloan source");
         if(depositFlag) {
             _flashLoanDeposit(sender, param1, param2, param3, param4, param5, params);
@@ -95,5 +89,4 @@ contract EulerCurveMetaLeverager is CurveLeverager {
     function _getDTokenAddress() internal view returns (address dTokenAddress) {
         dTokenAddress = markets.underlyingToDToken(underlyingToken);
     }
-
 }

@@ -4,12 +4,10 @@ import "./ERC4626.sol";
 import "lib/openzeppelin-contracts/contracts/token/ERC20/IERC20.sol";
 import "lib/openzeppelin-contracts/contracts/access/Ownable.sol";
 import "./interfaces/uniswap/TransferHelper.sol";
-import "./interfaces/alchemist/IAlchemistV2.sol";
+import "./interfaces/IDebtTokenAdapter.sol";
 import "./interfaces/ILeveragedVault.sol";
 import "./interfaces/ILeverager.sol";
 import "./interfaces/wETH/IWETH.sol";
-
-import "forge-std/console.sol";
 
 pragma solidity 0.8.26;
 
@@ -102,7 +100,6 @@ contract LeveragedVault is Ownable, ERC4626, ILeveragedVault {
     }
 
     function convertSharesToUnderlyingTokens(uint256 leveragedVaultShares) public view returns (uint256) {
-        console.log(totalSupply());
         return leveragedVaultShares * getVaultRedeemableBalance() / totalSupply();
     }
 
@@ -131,9 +128,9 @@ contract LeveragedVault is Ownable, ERC4626, ILeveragedVault {
                       bytes memory swapParams) external {
         uint256 depositAmount = _underlyingToken.balanceOf(address(this));
         int256 debtBefore = leverager.getDebtBalance(address(this));
-        IAlchemistV2 alchemist = IAlchemistV2(debtSource);
+        IDebtTokenAdapter debtAdapter = IDebtTokenAdapter(debtSource);
         //this calculation won't be right until the getLeverageParameters call has been written
-        alchemist.approveMint(address(leverager), depositAmount);      
+        debtAdapter.approveMint(address(leverager), depositAmount);      
 
         wETH.approve(address(leverager), depositAmount);
         leverager.leverage(clampedDeposit, flashLoanAmount, underlyingDepositMin, mintAmount, debtTradeMin, swapParams);
