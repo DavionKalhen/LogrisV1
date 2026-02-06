@@ -21,4 +21,4 @@ out/
 dapp/src/contracts.json
 
 # Local development
-/tmp/anvil.log
+/tmp/anvil.logalchemix-v3/
