@@ -35,7 +35,7 @@ contract FlashLoanAdapterForkTest is Test {
 
     function setUp() public {
         // Create mainnet fork
-        string memory rpcUrl = vm.envOr("ETH_RPC_URL", string("https://eth-mainnet.g.alchemy.com/v2/tCMAPrjXUlMZqpkxMfLRr"));
+        string memory rpcUrl = vm.envOr("ETH_RPC_URL", string("https://eth-mainnet.g.alchemy.com/v2/demo"));
         vm.createSelectFork(rpcUrl, 19500000);
 
         // Deploy Balancer adapter with mainnet vault
@@ -340,7 +340,7 @@ contract EulerFlashLoanAdapterForkTest is Test {
 
     function setUp() public {
         // Create mainnet fork
-        string memory rpcUrl = vm.envOr("ETH_RPC_URL", string("https://eth-mainnet.g.alchemy.com/v2/tCMAPrjXUlMZqpkxMfLRr"));
+        string memory rpcUrl = vm.envOr("ETH_RPC_URL", string("https://eth-mainnet.g.alchemy.com/v2/demo"));
         vm.createSelectFork(rpcUrl, 19500000);
 
         // Set up Euler adapter with token mappings
@@ -461,7 +461,7 @@ contract FlashLoanAdapterComparisonTest is Test {
 
     function setUp() public {
         // Create mainnet fork
-        string memory rpcUrl = vm.envOr("ETH_RPC_URL", string("https://eth-mainnet.g.alchemy.com/v2/tCMAPrjXUlMZqpkxMfLRr"));
+        string memory rpcUrl = vm.envOr("ETH_RPC_URL", string("https://eth-mainnet.g.alchemy.com/v2/demo"));
         vm.createSelectFork(rpcUrl, 19500000);
 
         balancerAdapter = new BalancerFlashLoanAdapter(BALANCER_VAULT);

@@ -172,7 +172,7 @@ contract CurveSwapperForkTest is Test {
     address public owner = makeAddr("owner");
 
     function setUp() public {
-        string memory rpcUrl = vm.envOr("ETH_RPC_URL", string("https://eth-mainnet.g.alchemy.com/v2/tCMAPrjXUlMZqpkxMfLRr"));
+        string memory rpcUrl = vm.envOr("ETH_RPC_URL", string("https://eth-mainnet.g.alchemy.com/v2/demo"));
         vm.createSelectFork(rpcUrl, 19500000); // Use specific block for consistency
 
         swapper = new CurveStETHSwapper(owner);
