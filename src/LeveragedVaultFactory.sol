@@ -7,6 +7,11 @@ import "./LeveragedVault.sol";
 import "lib/openzeppelin-contracts/contracts/access/Ownable.sol";
 
 contract LeveragedVaultFactory is ILeveragedVaultFactory, Ownable {   
+    /// @notice Maps vault key (keccak256(yieldToken, alchemist)) to vault address
+    /// @dev Keyed on the pair to support multiple Alchemist deployments per yield token
+    mapping (bytes32 => address) public vaultsByKey;
+
+    /// @notice Convenience lookup: yield token → vault (returns first registered)
     mapping (address => address) public vaults;
 
     constructor() Ownable(msg.sender) {}
@@ -39,7 +44,8 @@ contract LeveragedVaultFactory is ILeveragedVaultFactory, Ownable {
         require(defaultSwapper != address(0), "Default swapper cannot be 0");
         require(underlyingSlippageBasisPoints < 10000, "Underlying slippage basis points must be less than 10000");
         require(debtSlippageBasisPoints < 10000, "Debt slippage basis points must be less than 10000");
-        require(vaults[yieldToken] == address(0), "Vault already exists for yield token");
+        bytes32 vaultKey = keccak256(abi.encodePacked(yieldToken, alchemist));
+        require(vaultsByKey[vaultKey] == address(0), "Vault already exists for yield token + alchemist pair");
 
         _requireContract(yieldToken, "Yield token must be a contract");
         _requireContract(underlyingToken, "Underlying token must be a contract");
@@ -65,7 +71,10 @@ contract LeveragedVaultFactory is ILeveragedVaultFactory, Ownable {
             weth
         );
         vault = address(newVault);
-        vaults[yieldToken] = vault;
+        vaultsByKey[vaultKey] = vault;
+        if (vaults[yieldToken] == address(0)) {
+            vaults[yieldToken] = vault;
+        }
 
         // Transfer vault ownership to the caller (factory owner)
         newVault.transferOwnership(msg.sender);

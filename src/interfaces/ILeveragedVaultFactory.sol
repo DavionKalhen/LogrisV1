@@ -11,7 +11,8 @@ interface ILeveragedVaultFactory {
         address leverager
     );
 
-    function vaults(address) external view returns (address);
+    function vaults(address yieldToken) external view returns (address);
+    function vaultsByKey(bytes32 key) external view returns (address);
 
     function createVault(
         string memory tokenName,

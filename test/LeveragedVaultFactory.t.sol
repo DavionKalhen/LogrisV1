@@ -285,7 +285,7 @@ contract LeveragedVaultFactoryTest is Test {
             mockWeth
         );
 
-        vm.expectRevert("Vault already exists for yield token");
+        vm.expectRevert("Vault already exists for yield token + alchemist pair");
         factory.createVault(
             "Test Vault 2",
             "TVAULT2",
