@@ -643,7 +643,7 @@ contract LeveragedVault is Ownable, ERC4626, ReentrancyGuard, Pausable, ILeverag
         uint256 flashLoanAmount,
         uint256 burnAmount,
         uint256 minUnderlyingOut
-    ) external override whenNotPaused noConcurrentOperation returns (uint256 underlyingWithdrawAmount) {
+    ) external override noConcurrentOperation returns (uint256 underlyingWithdrawAmount) {
         return _withdrawUnderlyingWithAdapters(
             shares,
             flashLoanAmount,
@@ -664,7 +664,7 @@ contract LeveragedVault is Ownable, ERC4626, ReentrancyGuard, Pausable, ILeverag
         address converter,
         address flashLoanAdapter,
         address swapper
-    ) external whenNotPaused noConcurrentOperation returns (uint256 underlyingWithdrawAmount) {
+    ) external noConcurrentOperation returns (uint256 underlyingWithdrawAmount) {
         return _withdrawUnderlyingWithAdapters(
             shares,
             flashLoanAmount,
@@ -764,7 +764,7 @@ contract LeveragedVault is Ownable, ERC4626, ReentrancyGuard, Pausable, ILeverag
         uint256 shares,
         uint32 _underlyingSlippageBasisPoints,
         uint32 _debtSlippageBasisPoints
-    ) external override whenNotPaused noConcurrentOperation returns (uint256 underlyingAmount) {
+    ) external override noConcurrentOperation returns (uint256 underlyingAmount) {
         (
             uint256 flashLoanAmount,
             uint256 burnAmount,

@@ -84,16 +84,26 @@ contract LeveragedVaultPauseTest is Test {
         vault.leverage(1, 0, 0, 0, 0);
     }
 
-    function testPauseBlocksWithdrawUnderlying() public {
+    function testPauseAllowsWithdrawUnderlying() public {
+        // Deposit first, then pause, then withdraw should still work
+        underlying.mint(user, 1 ether);
+        vm.startPrank(user);
+        underlying.approve(address(vault), 1 ether);
+        uint256 shares = vault.depositUnderlying(1 ether);
+        vm.stopPrank();
+
         vault.pause();
-        vm.expectRevert(abi.encodeWithSignature("EnforcedPause()"));
-        vault.withdrawUnderlying(1, 0, 0, 0);
+
+        // Withdrawal should succeed even when paused
+        vm.prank(user);
+        vault.withdrawUnderlying(shares, 0, 0, 0);
+        assertEq(vault.balanceOf(user), 0, "User should have withdrawn");
     }
 
-    function testPauseBlocksWithdrawUnderlyingAtomic() public {
+    function testPauseStillBlocksLeverageAtomic() public {
         vault.pause();
         vm.expectRevert(abi.encodeWithSignature("EnforcedPause()"));
-        vault.withdrawUnderlyingAtomic(1, 0, 0);
+        vault.leverageAtomic(1 ether, 100, 200);
     }
 
     function testUnpauseAllowsDeposit() public {
