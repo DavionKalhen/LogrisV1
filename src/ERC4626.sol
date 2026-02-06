@@ -152,11 +152,8 @@ abstract contract ERC4626 is ERC20, IERC4626 {
     /**
      * @dev Internal conversion function (from assets to shares) with support for rounding direction.
      */
-
-    function _convertToShares(uint256 assets, Math.Rounding/* rounding*/) internal view virtual returns (uint256) {
-        if(totalSupply() == 0)
-            return assets;
-        return assets * totalSupply() / (totalAssets() - assets);
+    function _convertToShares(uint256 assets, Math.Rounding rounding) internal view virtual returns (uint256) {
+        return assets.mulDiv(totalSupply() + 10 ** _decimalsOffset(), totalAssets() + 1, rounding);
     }
 
     /**
@@ -194,6 +191,7 @@ abstract contract ERC4626 is ERC20, IERC4626 {
 
         emit Deposit(caller, receiver, assets, shares);
     }
+
     /**
      * @dev Withdraw/redeem common workflow.
      */
@@ -207,13 +205,6 @@ abstract contract ERC4626 is ERC20, IERC4626 {
         if (caller != owner) {
             _spendAllowance(owner, caller, shares);
         }
-
-        // If _asset is ERC777, `transfer` can trigger a reentrancy AFTER the transfer happens through the
-        // `tokensReceived` hook. On the other hand, the `tokensToSend` hook, that is triggered before the transfer,
-        // calls the vault, which is assumed not malicious.
-        //
-        // Conclusion: we need to do the transfer after the burn so that any reentrancy would happen after the
-        // shares are burned and after the assets are transferred, which is a valid state.
         _burn(owner, shares);
         SafeERC20.safeTransfer(_asset, receiver, assets);
 

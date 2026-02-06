@@ -28,88 +28,63 @@ Alchemix V3 represents a significant architectural evolution from V2, introducin
    - V2: Account-based approvals
    - V3: Version-based allowances tied to position NFTs
 
-## Integration Strategy: Adapter Pattern
+## Integration Strategy: Vault + Leverager with Adapters
 
-We've implemented an adapter pattern to maintain compatibility with our existing leveraging system:
+The current V3 flow uses a generic `V3Leverager` plus adapter registries for flash loans, swaps, and token conversion.
 
-1. The `IDebtTokenAdapter` interface provides a standardized way to interact with debt token systems
-2. Our new `AlchemixV3DebtAdapter` implements this interface for V3
-3. This allows our `Leverager` and `LeveragedVault` contracts to work with both V2 and V3
+1. **LeveragedVault** owns a single Alchemist V3 position NFT and exposes callback hooks.
+2. **V3Leverager** orchestrates leverage/deleverage using approved adapters.
+3. **Adapters** are swappable and pre-approved:
+   - `ITokenConverter` (underlying ↔ yield)
+   - `IFlashLoanAdapter` (Aave/Balancer/Euler, etc.)
+   - `ISwapper` (Curve/other DEXes)
 
-## AlchemixV3DebtAdapter Implementation
+## Integration with the Flash Loan Leveraging System
 
-The `AlchemixV3DebtAdapter` handles the translation between our system's account-based approach and V3's NFT-based positions:
+### Setting Up the Leverager and Adapters
+
+1. Deploy the `V3Leverager` and approve adapters:
 
 ```solidity
-// Main responsibilities
-contract AlchemixV3DebtAdapter is IDebtTokenAdapter {
-    // Maps user addresses to their V3 position tokenIDs
-    mapping(address => uint256) private _positionIds;
-    
-    // Gets or creates a V3 position for a user
-    function getOrCreatePositionId(address account) public returns (uint256);
-    
-    // Adapter functions convert between systems
-    function positions(address account, address yieldToken) external view override returns (uint256, uint256);
-    function accounts(address account) external view override returns (int256, uint256);
-    // etc...
-}
+V3Leverager leverager = new V3Leverager(owner);
+leverager.setConverterApproval(address(converter), true);
+leverager.setFlashLoanAdapterApproval(address(flashLoanAdapter), true);
+leverager.setSwapperApproval(address(swapper), true);
 ```
 
-### Position Management
-
-The adapter maintains a mapping from user addresses to V3 position tokenIDs, creating positions as needed:
+2. Deploy the vault with default adapters:
 
 ```solidity
-function getOrCreatePositionId(address account) public returns (uint256) {
-    if (_positionIds[account] == 0) {
-        // Create a new position for this account if none exists
-        uint256 tokenId = IAlchemistV3Position(alchemistV3.alchemistPositionNFT()).mint(account);
-        _positionIds[account] = tokenId;
-    }
-    return _positionIds[account];
-}
-```
-
-## Integration with Flash Loan Leveraging System
-
-### Setting Up the Adapter
-
-1. Deploy the `AlchemixV3DebtAdapter` with the AlchemistV3 contract address:
-
-```solidity
-AlchemixV3DebtAdapter adapter = new AlchemixV3DebtAdapter(alchemistV3Address);
-```
-
-2. Set yield token to underlying token pairs:
-
-```solidity
-adapter.setYieldTokenUnderlyingPair(yieldTokenAddress, underlyingTokenAddress);
-```
-
-3. Update your `Leverager` implementations to use the adapter:
-
-```solidity
-constructor(
-    address _yieldToken,
-    address _underlyingToken,
-    address _debtToken,
-    address _debtAdapter
-)
+LeveragedVault vault = new LeveragedVault(
+    "Leveraged Vault",
+    "lVAULT",
+    yieldToken,
+    underlyingToken,
+    alchemistV3,
+    address(leverager),
+    100, // underlying slippage bps (caller-provided minOuts are enforced)
+    300, // debt slippage bps
+    address(converter),
+    address(flashLoanAdapter),
+    address(swapper),
+    weth
+);
 ```
 
 ### Flash Loan Workflows
 
-The flash loan leveraging process works similarly with both V2 and V3, but with different adapter implementations:
-
 1. **Deposit and Leverage**:
    ```
-   User -> LeveragedVault -> Leverager -> Flash Loan -> AlchemixV3DebtAdapter -> AlchemistV3
+   User -> LeveragedVault -> V3Leverager -> Flash Loan Adapter
+                     ↑           ↓
+               Vault callbacks    Swapper + Converter
    ```
 
 2. **Withdraw and Deleveraging**:
    ```
-   User -> LeveragedVault -> Leverager -> Flash Loan -> AlchemixV3DebtAdapter -> AlchemistV3
+   User -> LeveragedVault -> V3Leverager -> Flash Loan Adapter
+                     ↑           ↓
+               Vault callbacks    Swapper + Converter
    ```
 
 ## Implementation Considerations
@@ -155,17 +130,11 @@ V3 operations may have different gas profiles than V2:
 ### Example: Creating a Leveraged Position with V3
 
 ```javascript
-// Set up the adapter
-const adapter = await AlchemixV3DebtAdapter.deploy(alchemistV3.address);
-await adapter.setYieldTokenUnderlyingPair(yieldToken.address, underlyingToken.address);
-
 // Set up the leverager
-const leverager = await BalancerCurveLeverager.deploy(
-  yieldToken.address,
-  underlyingToken.address,
-  debtToken.address,
-  adapter.address
-);
+const leverager = await V3Leverager.deploy(owner.address);
+await leverager.setConverterApproval(converter.address, true);
+await leverager.setFlashLoanAdapterApproval(flashLoanAdapter.address, true);
+await leverager.setSwapperApproval(swapper.address, true);
 
 // Set up the vault
 const vault = await LeveragedVault.deploy(
@@ -173,10 +142,14 @@ const vault = await LeveragedVault.deploy(
   "lalETH",
   yieldToken.address,
   underlyingToken.address,
+  alchemistV3.address,
   leverager.address,
-  adapter.address,
-  30, // 0.3% slippage
-  50  // 0.5% slippage
+  30, // underlying slippage bps
+  50, // debt slippage bps
+  converter.address,
+  flashLoanAdapter.address,
+  swapper.address,
+  weth.address
 );
 
 // Use the vault for leveraged positions
@@ -189,22 +162,16 @@ await vault.leverage(
   flashLoanAmount,
   underlyingDepositMin,
   mintAmount,
-  debtTradeMin,
-  swapParams
+  debtTradeMin
 );
 ```
 
 ### Example: Querying Position Data
 
 ```javascript
-// Get a user's V3 position
-const tokenId = await adapter.getPositionId(userAddress);
+// Get the vault's V3 position
+const tokenId = await vault.getVaultPositionId();
 const accountInfo = await alchemistV3.getAccount(tokenId);
-
-// Get information through the adapter (compatible with V2 interface)
-const [shares, lastWeight] = await adapter.positions(userAddress, yieldToken.address);
-const [debt, lastUpdate] = await adapter.accounts(userAddress);
-const borrowCapacity = await leverager.getBorrowCapacity(userAddress);
 ```
 
 ## Conclusion

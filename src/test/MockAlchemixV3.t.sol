@@ -21,7 +21,7 @@ import { IAlchemistV3Position } from "../../alchemix-v3/src/interfaces/IAlchemis
 import { TestERC20 } from "../../alchemix-v3/src/test/mocks/TestERC20.sol"; // Assuming a generic ERC20 mock suffices
 import { TestYieldToken } from "../../alchemix-v3/src/test/mocks/TestYieldToken.sol"; // Mock yield token / adapter
 import { AlchemicTokenV3 } from "../../alchemix-v3/src/test/mocks/AlchemicTokenV3.sol"; // Mock debt token
-// --- Note: Transmuter and Fee Vault setup are omitted for simplicity, add if needed ---
+// --- Note: Transmuter and fee vault setup are omitted for this test harness ---
 
 contract MockAlchemixV3Test is Test {
     // ----- State Variables -----
@@ -80,7 +80,7 @@ contract MockAlchemixV3Test is Test {
             tokenAdapter: address(yieldToken), // Using yield token as mock adapter
             transmuter: address(0), // Omitting transmuter for this basic setup
             protocolFee: 0,
-            protocolFeeReceiver: address(0xdead), // Placeholder
+            protocolFeeReceiver: address(0xdead),
             liquidatorFee: liquidationFeeBPS
         });
 
@@ -102,7 +102,7 @@ contract MockAlchemixV3Test is Test {
         // 7. Set NFT address in Alchemist
         alchemist.setAlchemistPositionNFT(address(alchemistNFT));
 
-        // --- Fee vault setup omitted for simplicity ---
+        // --- Fee vault setup omitted in this test harness ---
         // alchemistFeeVault = new AlchemistTokenVault(address(underlyingToken), address(alchemist), deployer);
         // alchemistFeeVault.setAuthorization(address(alchemist), true);
         // alchemist.setAlchemistFeeVault(address(alchemistFeeVault));

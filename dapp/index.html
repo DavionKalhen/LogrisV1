@@ -1,0 +1,1124 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Logris V1 - Leveraged Vault (Real wstETH + Real Curve)</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/ethers/5.7.2/ethers.umd.min.js"></script>
+    <style>
+        :root {
+            --bg-primary: #0a0a0f;
+            --bg-secondary: #141420;
+            --bg-card: #1a1a2e;
+            --accent: #6366f1;
+            --accent-hover: #818cf8;
+            --text-primary: #f1f5f9;
+            --text-secondary: #94a3b8;
+            --success: #22c55e;
+            --error: #ef4444;
+            --warning: #f59e0b;
+            --border: #2a2a40;
+            --lido: #00a3ff;
+        }
+
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+
+        body {
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: var(--bg-primary);
+            color: var(--text-primary);
+            min-height: 100vh;
+            line-height: 1.6;
+        }
+
+        .container { max-width: 1200px; margin: 0 auto; padding: 2rem; }
+
+        header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 1rem 0;
+            border-bottom: 1px solid var(--border);
+            margin-bottom: 2rem;
+        }
+
+        .logo { font-size: 1.5rem; font-weight: 700; color: var(--accent); }
+        .logo span { color: var(--text-secondary); font-weight: 400; }
+        .logo .real-tag {
+            background: var(--success);
+            color: white;
+            font-size: 0.6rem;
+            padding: 0.2rem 0.4rem;
+            border-radius: 4px;
+            margin-left: 0.5rem;
+            vertical-align: middle;
+        }
+
+        .wallet-btn {
+            background: var(--accent);
+            color: white;
+            border: none;
+            padding: 0.75rem 1.5rem;
+            border-radius: 8px;
+            cursor: pointer;
+            font-size: 0.9rem;
+            font-weight: 500;
+            transition: background 0.2s;
+        }
+        .wallet-btn:hover { background: var(--accent-hover); }
+        .wallet-btn.connected { background: var(--success); }
+
+        .grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(350px, 1fr));
+            gap: 1.5rem;
+        }
+
+        .card {
+            background: var(--bg-card);
+            border: 1px solid var(--border);
+            border-radius: 12px;
+            padding: 1.5rem;
+        }
+
+        .card-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 1rem;
+        }
+
+        .card-title { font-size: 1.1rem; font-weight: 600; }
+
+        .status-badge {
+            padding: 0.25rem 0.75rem;
+            border-radius: 20px;
+            font-size: 0.75rem;
+            font-weight: 500;
+        }
+        .status-badge.success { background: rgba(34, 197, 94, 0.2); color: var(--success); }
+        .status-badge.warning { background: rgba(245, 158, 11, 0.2); color: var(--warning); }
+        .status-badge.error { background: rgba(239, 68, 68, 0.2); color: var(--error); }
+
+        .stat-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 1rem; }
+
+        .stat {
+            background: var(--bg-secondary);
+            padding: 1rem;
+            border-radius: 8px;
+        }
+        .stat-label { font-size: 0.8rem; color: var(--text-secondary); margin-bottom: 0.25rem; }
+        .stat-value { font-size: 1.25rem; font-weight: 600; }
+        .stat-value.lido { color: var(--lido); }
+
+        .form-group { margin-bottom: 1rem; }
+        .form-group label { display: block; font-size: 0.85rem; color: var(--text-secondary); margin-bottom: 0.5rem; }
+        .form-group input {
+            width: 100%;
+            background: var(--bg-secondary);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 0.75rem;
+            color: var(--text-primary);
+            font-size: 1rem;
+        }
+        .form-group input:focus { outline: none; border-color: var(--accent); }
+
+        .input-with-max { position: relative; }
+        .input-with-max .max-btn {
+            position: absolute;
+            right: 0.5rem;
+            top: 50%;
+            transform: translateY(-50%);
+            background: var(--accent);
+            color: white;
+            border: none;
+            padding: 0.25rem 0.5rem;
+            border-radius: 4px;
+            font-size: 0.75rem;
+            cursor: pointer;
+        }
+
+        .btn-primary {
+            width: 100%;
+            background: var(--accent);
+            color: white;
+            border: none;
+            padding: 1rem;
+            border-radius: 8px;
+            font-size: 1rem;
+            font-weight: 600;
+            cursor: pointer;
+            transition: background 0.2s;
+        }
+        .btn-primary:hover:not(:disabled) { background: var(--accent-hover); }
+        .btn-primary:disabled { opacity: 0.5; cursor: not-allowed; }
+        .btn-secondary { background: var(--bg-secondary); border: 1px solid var(--border); }
+        .btn-lido { background: var(--lido); }
+        .btn-lido:hover:not(:disabled) { background: #0090e0; }
+
+        .slider-container { margin-bottom: 1rem; }
+        .slider-labels { display: flex; justify-content: space-between; font-size: 0.8rem; color: var(--text-secondary); margin-bottom: 0.5rem; }
+
+        input[type="range"] {
+            width: 100%;
+            height: 6px;
+            background: var(--bg-secondary);
+            border-radius: 3px;
+            -webkit-appearance: none;
+        }
+        input[type="range"]::-webkit-slider-thumb {
+            -webkit-appearance: none;
+            width: 20px;
+            height: 20px;
+            background: var(--accent);
+            border-radius: 50%;
+            cursor: pointer;
+        }
+
+        .log-container {
+            background: var(--bg-secondary);
+            border-radius: 8px;
+            padding: 1rem;
+            max-height: 300px;
+            overflow-y: auto;
+            font-family: 'Monaco', 'Menlo', monospace;
+            font-size: 0.85rem;
+        }
+        .log-entry { padding: 0.5rem 0; border-bottom: 1px solid var(--border); }
+        .log-entry:last-child { border-bottom: none; }
+        .log-entry.info { color: var(--text-secondary); }
+        .log-entry.success { color: var(--success); }
+        .log-entry.error { color: var(--error); }
+        .log-entry .timestamp { color: var(--text-secondary); font-size: 0.75rem; }
+
+        .address-display {
+            font-family: 'Monaco', 'Menlo', monospace;
+            font-size: 0.85rem;
+            background: var(--bg-secondary);
+            padding: 0.5rem;
+            border-radius: 4px;
+            word-break: break-all;
+        }
+
+        .tabs { display: flex; gap: 0.5rem; margin-bottom: 1rem; }
+        .tab {
+            padding: 0.5rem 1rem;
+            background: transparent;
+            border: 1px solid var(--border);
+            border-radius: 6px;
+            color: var(--text-secondary);
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+        .tab.active { background: var(--accent); border-color: var(--accent); color: white; }
+        .hidden { display: none; }
+
+        .leverage-preview { background: var(--bg-secondary); border-radius: 8px; padding: 1rem; margin-bottom: 1rem; }
+        .preview-row { display: flex; justify-content: space-between; padding: 0.5rem 0; border-bottom: 1px solid var(--border); }
+        .preview-row:last-child { border-bottom: none; }
+        .preview-label { color: var(--text-secondary); }
+        .preview-value { font-weight: 500; }
+
+        .warning-box {
+            background: rgba(245, 158, 11, 0.1);
+            border: 1px solid var(--warning);
+            border-radius: 8px;
+            padding: 1rem;
+            margin-bottom: 1rem;
+            font-size: 0.9rem;
+        }
+        .info-box {
+            background: rgba(99, 102, 241, 0.1);
+            border: 1px solid var(--accent);
+            border-radius: 8px;
+            padding: 1rem;
+            margin-bottom: 1rem;
+            font-size: 0.9rem;
+        }
+        .info-box.lido {
+            background: rgba(0, 163, 255, 0.1);
+            border-color: var(--lido);
+        }
+
+        @media (max-width: 768px) {
+            .container { padding: 1rem; }
+            .grid { grid-template-columns: 1fr; }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <header>
+            <div class="logo">Logris <span>V1</span><span class="real-tag">REAL wstETH + Curve</span></div>
+            <div id="connectBtn" class="wallet-btn connected" style="cursor: default;">Loading...</div>
+        </header>
+
+        <div id="connectionInfo" class="info-box lido hidden">
+            <strong>Connected to Mainnet Fork with Real Lido wstETH</strong>
+            <p>Using test account | Chain ID: 31337 | wstETH Price: <span id="wstEthPrice">-</span> ETH</p>
+        </div>
+
+        <div class="grid">
+            <!-- Wallet & Position Info -->
+            <div class="card">
+                <div class="card-header">
+                    <h2 class="card-title">Your Position</h2>
+                    <span id="healthStatus" class="status-badge warning">Not Connected</span>
+                </div>
+                <div class="stat-grid">
+                    <div class="stat">
+                        <div class="stat-label">ETH Balance</div>
+                        <div class="stat-value" id="ethBalance">-</div>
+                    </div>
+                    <div class="stat">
+                        <div class="stat-label">wstETH Balance</div>
+                        <div class="stat-value lido" id="wstethBalance">-</div>
+                    </div>
+                    <div class="stat">
+                        <div class="stat-label">Vault Shares</div>
+                        <div class="stat-value" id="vaultShares">-</div>
+                    </div>
+                    <div class="stat">
+                        <div class="stat-label">Collateral (wstETH)</div>
+                        <div class="stat-value lido" id="collateral">-</div>
+                    </div>
+                    <div class="stat">
+                        <div class="stat-label">Debt (alETH)</div>
+                        <div class="stat-value" id="debt">-</div>
+                    </div>
+                </div>
+                <div style="margin-top: 1rem;">
+                    <div class="stat-label">Position ID</div>
+                    <div class="address-display" id="positionId">No position yet</div>
+                </div>
+            </div>
+
+            <!-- Leverage Panel -->
+            <div class="card">
+                <div class="card-header">
+                    <h2 class="card-title">Leverage</h2>
+                </div>
+
+                <div class="tabs">
+                    <button class="tab active" onclick="showTab('leverage')">Leverage</button>
+                    <button class="tab" onclick="showTab('deleverage')">Deleverage</button>
+                </div>
+
+                <!-- Leverage Form -->
+                <div id="leverageTab">
+                    <div class="form-group">
+                        <label>Initial Deposit (ETH)</label>
+                        <div class="input-with-max">
+                            <input type="number" id="depositAmount" placeholder="5.0" step="0.1">
+                            <button class="max-btn" onclick="setMaxDeposit()">MAX</button>
+                        </div>
+                    </div>
+
+                    <div class="slider-container">
+                        <div class="slider-labels">
+                            <span>Leverage</span>
+                            <span id="leverageDisplay">2.0x</span>
+                        </div>
+                        <input type="range" id="leverageSlider" min="1" max="4" step="0.1" value="2" oninput="updateLeveragePreview()">
+                    </div>
+
+                    <div class="leverage-preview">
+                        <div class="preview-row">
+                            <span class="preview-label">Flash Loan Amount</span>
+                            <span class="preview-value" id="flashLoanAmount">-</span>
+                        </div>
+                        <div class="preview-row">
+                            <span class="preview-label">Total Collateral (WETH)</span>
+                            <span class="preview-value" id="totalCollateral">-</span>
+                        </div>
+                        <div class="preview-row">
+                            <span class="preview-label">Debt to Mint</span>
+                            <span class="preview-value" id="debtToMint">-</span>
+                        </div>
+                        <div class="preview-row">
+                            <span class="preview-label">Est. Health Factor</span>
+                            <span class="preview-value" id="healthFactor">-</span>
+                        </div>
+                    </div>
+
+                    <button class="btn-primary" id="leverageBtn" onclick="executeLeverage()" disabled>
+                        Execute Leverage
+                    </button>
+                </div>
+
+                <!-- Deleverage Form -->
+                <div id="deleverageTab" class="hidden">
+                    <div class="warning-box">
+                        Deleveraging will repay your debt and withdraw collateral.
+                    </div>
+
+                    <div class="form-group">
+                        <label>Vault Shares to Withdraw</label>
+                        <input type="number" id="withdrawAmount" placeholder="0.0 (leave blank for max)" step="0.1">
+                    </div>
+
+                    <button class="btn-primary btn-secondary" id="deleverageBtn" onclick="executeDeleverage()" disabled>
+                        Execute Deleverage
+                    </button>
+                </div>
+            </div>
+
+            <!-- Actions Panel -->
+            <div class="card">
+                <div class="card-header">
+                    <h2 class="card-title">Quick Actions</h2>
+                </div>
+
+                <div style="display: flex; flex-direction: column; gap: 0.75rem;">
+                    <button class="btn-primary btn-lido" onclick="stakeToWstETH()">Stake 10 ETH via Lido</button>
+                    <button class="btn-primary btn-secondary" onclick="refreshBalances()">Refresh Balances</button>
+                    <button class="btn-primary btn-secondary" onclick="fundAccount()">Fund Account (100 ETH)</button>
+                </div>
+
+                <div style="margin-top: 1rem; font-size: 0.8rem; color: var(--text-secondary);">
+                    <p>Leverage deposits ETH into the vault, which converts to wstETH on-chain.</p>
+                </div>
+            </div>
+
+            <!-- Contract Addresses -->
+            <div class="card">
+                <div class="card-header">
+                    <h2 class="card-title">Contract Addresses</h2>
+                </div>
+
+                <div style="display: flex; flex-direction: column; gap: 0.5rem; font-size: 0.85rem;">
+                    <div>
+                        <div class="stat-label">wstETH (Real Lido)</div>
+                        <div class="address-display" id="wstethAddr">0x7f39C581F595B53c5cb19bD0b3f8dA6c935E2Ca0</div>
+                    </div>
+                    <div>
+                        <div class="stat-label">AlchemistV3</div>
+                        <div class="address-display" id="alchemistAddr">Loading...</div>
+                    </div>
+                    <div>
+                        <div class="stat-label">Leverager</div>
+                        <div class="address-display" id="leveragerAddr">Loading...</div>
+                    </div>
+                    <div>
+                        <div class="stat-label">Curve Pool (Real)</div>
+                        <div class="address-display" id="curvePoolAddr">Loading...</div>
+                    </div>
+                    <div>
+                        <div class="stat-label">Swapper</div>
+                        <div class="address-display" id="swapperAddr">Loading...</div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Activity Log -->
+            <div class="card" style="grid-column: 1 / -1;">
+                <div class="card-header">
+                    <h2 class="card-title">Activity Log</h2>
+                    <button class="btn-primary btn-secondary" style="width: auto; padding: 0.5rem 1rem;" onclick="clearLogs()">Clear</button>
+                </div>
+                <div class="log-container" id="logContainer">
+                    <div class="log-entry info">Connecting to local Anvil chain with mainnet fork...</div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // Globals
+        let provider, signer, contracts = {};
+        let userAddress = null;
+        let wstEthPriceEth = 1.0; // Will be fetched
+
+        // Contract addresses (mainnet)
+        const WSTETH = '0x7f39C581F595B53c5cb19bD0b3f8dA6c935E2Ca0';
+        const STETH = '0xae7ab96520DE3A18E5e111B5EaAb095312D7fE84';
+        const WETH = '0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2';
+
+        // Contract ABIs
+        const ERC20_ABI = [
+            "function balanceOf(address) view returns (uint256)",
+            "function approve(address spender, uint256 amount) returns (bool)",
+            "function allowance(address owner, address spender) view returns (uint256)",
+            "function transfer(address to, uint256 amount) returns (bool)"
+        ];
+
+        const WSTETH_ABI = [
+            ...ERC20_ABI,
+            "function stEthPerToken() view returns (uint256)",
+            "function getWstETHByStETH(uint256 stEthAmount) view returns (uint256)",
+            "function wrap(uint256 stETHAmount) returns (uint256)",
+            "function unwrap(uint256 wstETHAmount) returns (uint256)"
+        ];
+
+        const STETH_ABI = [
+            ...ERC20_ABI,
+            "function submit(address referral) payable returns (uint256)",
+            "function getSharesByPooledEth(uint256 ethAmount) view returns (uint256)"
+        ];
+
+        const ALCHEMIST_ABI = [
+            "function getCDP(uint256 tokenId) view returns (uint256 collateral, uint256 debt, uint256 earmarked)",
+            "function yieldToken() view returns (address)",
+            "function debtToken() view returns (address)",
+            "function alchemistPositionNFT() view returns (address)",
+            "function minimumCollateralization() view returns (uint256)",
+            "function convertYieldTokensToUnderlying(uint256 amount) view returns (uint256)"
+        ];
+
+        // V3Leverager uses struct params
+        const LEVERAGER_ABI = [
+            "function leverage((address vault, address converter, address flashLoanAdapter, address swapper, uint256 depositAmount, uint256 flashLoanAmount, uint256 mintAmount, uint256 minSwapOutput) params)",
+            "function deleverage((address vault, address converter, address flashLoanAdapter, address swapper, uint256 withdrawAmount, uint256 flashLoanAmount, uint256 burnAmount, uint256 minOutput) params)",
+            "function isApprovedConverter(address) view returns (bool)",
+            "function isApprovedFlashLoanAdapter(address) view returns (bool)",
+            "function isApprovedSwapper(address) view returns (bool)"
+        ];
+
+        const CONVERTER_ABI = [
+            "function previewToUnderlying(uint256 amount) view returns (uint256)",
+            "function previewToYield(uint256 amount) view returns (uint256)"
+        ];
+
+        const SWAPPER_ABI = [
+            "function previewSwapDebtToUnderlying(uint256 amount) view returns (uint256 expectedUnderlying, uint256 minimumOutput)"
+        ];
+
+        const FLASHLOAN_ADAPTER_ABI = [
+            "function getFlashLoanFee(address token, uint256 amount) view returns (uint256)"
+        ];
+
+        const VAULT_ABI = [
+            "function getVaultDepositedBalance() view returns (uint256)",
+            "function getVaultDebtBalance() view returns (int256)",
+            "function getVaultPositionId() view returns (uint256)",
+            "function getVaultRedeemableBalance() view returns (uint256)",
+            "function getLeverageParameters(uint256 depositAmount, uint32 underlyingSlippageBasisPoints, uint32 debtSlippageBasisPoints) view returns (uint256,uint256,uint256,uint256,uint256)",
+            "function getDepositCapacity() view returns (uint256)",
+            "function depositUnderlying() payable returns (uint256)",
+            "function leverage(uint256 clampedDeposit, uint256 flashLoanAmount, uint256 underlyingDepositMin, uint256 mintAmount, uint256 debtTradeMin)",
+            "function leverageWithAdapters(uint256 clampedDeposit, uint256 flashLoanAmount, uint256 underlyingDepositMin, uint256 mintAmount, uint256 debtTradeMin, address converter, address flashLoanAdapter, address swapper)",
+            "function getWithdrawUnderlyingParameters(uint256 shares, uint32 underlyingSlippageBasisPoints, uint32 debtSlippageBasisPoints) view returns (uint256 flashLoanAmount, uint256 burnAmount, uint256 minUnderlyingOut)",
+            "function withdrawUnderlyingWithAdapters(uint256 shares, uint256 flashLoanAmount, uint256 burnAmount, uint256 minUnderlyingOut, address converter, address flashLoanAdapter, address swapper) returns (uint256)",
+            "function totalAssets() view returns (uint256)",
+            "function totalSupply() view returns (uint256)",
+            "function balanceOf(address) view returns (uint256)",
+            "function deposit(uint256 assets, address receiver) returns (uint256)",
+            "function withdraw(uint256 assets, address receiver, address owner) returns (uint256)"
+        ];
+
+        // UI Functions
+        function log(message, type = 'info') {
+            const container = document.getElementById('logContainer');
+            const timestamp = new Date().toLocaleTimeString();
+            const entry = document.createElement('div');
+            entry.className = `log-entry ${type}`;
+            entry.innerHTML = `<span class="timestamp">[${timestamp}]</span> ${message}`;
+            container.insertBefore(entry, container.firstChild);
+        }
+
+        function clearLogs() {
+            document.getElementById('logContainer').innerHTML = '';
+        }
+
+        function showTab(tab) {
+            document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+            document.getElementById('leverageTab').classList.add('hidden');
+            document.getElementById('deleverageTab').classList.add('hidden');
+
+            event.target.classList.add('active');
+            document.getElementById(tab + 'Tab').classList.remove('hidden');
+        }
+
+        function updateLeveragePreview() {
+            const leverage = parseFloat(document.getElementById('leverageSlider').value);
+            const deposit = parseFloat(document.getElementById('depositAmount').value) || 0;
+
+            document.getElementById('leverageDisplay').textContent = leverage.toFixed(1) + 'x';
+
+            // ETH deposit -> flash loan WETH -> convert to wstETH on-chain
+            const flashLoan = deposit * (leverage - 1);
+            const totalCollateral = deposit + flashLoan;
+
+            // Debt to mint in alETH (need to cover flash loan + fees)
+            const debtToMint = flashLoan * 1.03; // 3% buffer for slippage
+
+            // Health factor based on ~90% LTV (approximate)
+            const healthFactor = debtToMint > 0 ? (totalCollateral / (debtToMint * 1.11)) : 0;
+
+            document.getElementById('flashLoanAmount').textContent = flashLoan.toFixed(4) + ' WETH';
+            document.getElementById('totalCollateral').textContent = totalCollateral.toFixed(4) + ' WETH';
+            document.getElementById('debtToMint').textContent = debtToMint.toFixed(4) + ' alETH';
+            document.getElementById('healthFactor').textContent = healthFactor.toFixed(2);
+        }
+
+        // Wallet Functions
+        async function connectWallet() {
+            try {
+                log('Connecting to local chain with mainnet fork...');
+
+                provider = new ethers.providers.JsonRpcProvider('http://localhost:8545');
+                const network = await provider.getNetwork();
+                log(`Connected to chain ID: ${network.chainId}`, 'success');
+
+                const privateKey = '0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80';
+                signer = new ethers.Wallet(privateKey, provider);
+                userAddress = await signer.getAddress();
+
+                document.getElementById('connectBtn').textContent = userAddress.slice(0, 6) + '...' + userAddress.slice(-4);
+                document.getElementById('connectBtn').classList.add('connected');
+                document.getElementById('connectionInfo').classList.remove('hidden');
+
+                log(`Using test account: ${userAddress}`, 'success');
+
+                // Setup Lido contracts
+                contracts.wsteth = new ethers.Contract(WSTETH, WSTETH_ABI, signer);
+                contracts.steth = new ethers.Contract(STETH, STETH_ABI, signer);
+
+                // Get wstETH price
+                const price = await contracts.wsteth.stEthPerToken();
+                wstEthPriceEth = parseFloat(ethers.utils.formatEther(price));
+                document.getElementById('wstEthPrice').textContent = wstEthPriceEth.toFixed(4);
+                log(`wstETH price: ${wstEthPriceEth.toFixed(4)} ETH per wstETH`, 'success');
+
+                await loadContracts();
+
+                document.getElementById('leverageBtn').disabled = false;
+                document.getElementById('deleverageBtn').disabled = false;
+
+                await refreshBalances();
+
+            } catch (error) {
+                log(`Error connecting: ${error.message}`, 'error');
+                console.error(error);
+            }
+        }
+
+        async function loadContracts() {
+            try {
+                const response = await fetch('./src/contracts.json');
+                const addresses = await response.json();
+
+                document.getElementById('alchemistAddr').textContent = addresses.alchemist;
+                document.getElementById('leveragerAddr').textContent = addresses.leverager;
+                document.getElementById('curvePoolAddr').textContent = addresses.curvePool || 'N/A';
+                document.getElementById('swapperAddr').textContent = addresses.swapper;
+
+                contracts.debtToken = new ethers.Contract(addresses.aleth, ERC20_ABI, signer);
+                contracts.alchemist = new ethers.Contract(addresses.alchemist, ALCHEMIST_ABI, signer);
+                contracts.leverager = new ethers.Contract(addresses.leverager, LEVERAGER_ABI, signer);
+                contracts.vault = new ethers.Contract(addresses.vault, VAULT_ABI, signer);
+                contracts.converter = new ethers.Contract(addresses.converter, CONVERTER_ABI, signer);
+                contracts.swapper = new ethers.Contract(addresses.swapper, SWAPPER_ABI, signer);
+                contracts.addresses = addresses;
+
+                log('Contracts loaded successfully', 'success');
+            } catch (error) {
+                log(`Error loading contracts: ${error.message}`, 'error');
+                log('Run: ./script/start-local.sh (or forge script script/DeployFork.s.sol:DeployFork --rpc-url http://localhost:8545 --broadcast)', 'info');
+            }
+        }
+
+        async function refreshBalances() {
+            if (!userAddress || !contracts.wsteth) return;
+
+            try {
+                const ethBalance = await provider.getBalance(userAddress);
+                const wstethBalance = await contracts.wsteth.balanceOf(userAddress);
+
+                document.getElementById('ethBalance').textContent = parseFloat(ethers.utils.formatEther(ethBalance)).toFixed(4);
+                document.getElementById('wstethBalance').textContent = parseFloat(ethers.utils.formatEther(wstethBalance)).toFixed(4);
+
+                // Check vault position
+                try {
+                    const collateral = await contracts.vault.getVaultDepositedBalance();
+                    const debt = await contracts.vault.getVaultDebtBalance();
+                    const positionId = await contracts.vault.getVaultPositionId();
+                    const userShares = await contracts.vault.balanceOf(userAddress);
+
+                    document.getElementById('vaultShares').textContent = parseFloat(ethers.utils.formatEther(userShares)).toFixed(4);
+
+                    if (positionId > 0 || userShares.gt(0)) {
+                        document.getElementById('positionId').textContent = positionId > 0 ? `#${positionId.toString()}` : 'Pending';
+                        document.getElementById('collateral').textContent = parseFloat(ethers.utils.formatEther(collateral)).toFixed(4);
+                        document.getElementById('debt').textContent = parseFloat(ethers.utils.formatEther(debt.abs())).toFixed(4);
+
+                        const healthStatus = document.getElementById('healthStatus');
+                        if (debt.gt(0)) {
+                            const collateralValue = parseFloat(ethers.utils.formatEther(collateral)) * wstEthPriceEth;
+                            const debtValue = parseFloat(ethers.utils.formatEther(debt.abs()));
+                            const health = (collateralValue / debtValue) * 100;
+
+                            if (health > 150) {
+                                healthStatus.className = 'status-badge success';
+                                healthStatus.textContent = 'Healthy (' + health.toFixed(0) + '%)';
+                            } else if (health > 120) {
+                                healthStatus.className = 'status-badge warning';
+                                healthStatus.textContent = 'At Risk (' + health.toFixed(0) + '%)';
+                            } else {
+                                healthStatus.className = 'status-badge error';
+                                healthStatus.textContent = 'Danger (' + health.toFixed(0) + '%)';
+                            }
+                        } else {
+                            healthStatus.className = 'status-badge success';
+                            healthStatus.textContent = 'No Debt';
+                        }
+                    } else {
+                        document.getElementById('positionId').textContent = 'No position yet';
+                        document.getElementById('collateral').textContent = '0';
+                        document.getElementById('debt').textContent = '0';
+                        document.getElementById('vaultShares').textContent = '0';
+                        document.getElementById('healthStatus').className = 'status-badge warning';
+                        document.getElementById('healthStatus').textContent = 'No Position';
+                    }
+                } catch (e) {
+                    console.log('Could not fetch position:', e.message);
+                }
+
+                log('Balances refreshed', 'info');
+            } catch (error) {
+                log(`Error refreshing balances: ${error.message}`, 'error');
+            }
+        }
+
+        async function stakeToWstETH() {
+            try {
+                const amount = ethers.utils.parseEther('10');
+                log('Staking 10 ETH via Lido to get wstETH...');
+
+                // Step 1: Submit ETH to Lido to get stETH
+                log('Submitting ETH to Lido...');
+                const submitTx = await contracts.steth.submit(ethers.constants.AddressZero, { value: amount });
+                await submitTx.wait();
+                log('Received stETH from Lido', 'success');
+
+                // Step 2: Get stETH balance
+                const stethBalance = await contracts.steth.balanceOf(userAddress);
+                log(`stETH balance: ${ethers.utils.formatEther(stethBalance)}`);
+
+                // Step 3: Approve wstETH contract to spend stETH
+                log('Approving stETH for wrapping...');
+                const approveTx = await contracts.steth.approve(WSTETH, stethBalance);
+                await approveTx.wait();
+
+                // Step 4: Wrap stETH to wstETH
+                log('Wrapping stETH to wstETH...');
+                const wrapTx = await contracts.wsteth.wrap(stethBalance);
+                await wrapTx.wait();
+
+                log('Successfully staked ETH and received wstETH!', 'success');
+                await refreshBalances();
+            } catch (error) {
+                log(`Error staking: ${error.message}`, 'error');
+                console.error(error);
+            }
+        }
+
+        async function fundAccount() {
+            try {
+                log('Funding account with 100 ETH...');
+
+                const fundedKey = '0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d';
+                const funder = new ethers.Wallet(fundedKey, provider);
+
+                const tx = await funder.sendTransaction({
+                    to: userAddress,
+                    value: ethers.utils.parseEther('100')
+                });
+                await tx.wait();
+
+                log('Received 100 ETH', 'success');
+                await refreshBalances();
+            } catch (error) {
+                log(`Error funding: ${error.message}`, 'error');
+            }
+        }
+
+        async function setMaxDeposit() {
+            if (!provider || !userAddress) return;
+
+            try {
+                const balance = await provider.getBalance(userAddress);
+                const buffer = ethers.utils.parseEther('0.01');
+                const max = balance.gt(buffer) ? balance.sub(buffer) : balance;
+                document.getElementById('depositAmount').value = ethers.utils.formatEther(max);
+                updateLeveragePreview();
+            } catch (error) {
+                log(`Error getting max: ${error.message}`, 'error');
+            }
+        }
+
+        async function executeLeverage() {
+            log('Starting leverage execution...', 'info');
+            try {
+                const depositValue = document.getElementById('depositAmount').value;
+                if (!depositValue || parseFloat(depositValue) <= 0) {
+                    log('Please enter a deposit amount', 'error');
+                    return;
+                }
+
+                let deposit = ethers.utils.parseEther(depositValue);
+                const leverage = parseFloat(document.getElementById('leverageSlider').value);
+
+                // Check ETH balance
+                const ethBalance = await provider.getBalance(userAddress);
+                if (ethBalance.lt(deposit)) {
+                    log(`Insufficient ETH. Have ${ethers.utils.formatEther(ethBalance)}, need ${depositValue}`, 'error');
+                    log('Use "Fund Account" to get test ETH', 'info');
+                    return;
+                }
+
+                log(`Executing leverage: ${ethers.utils.formatEther(deposit)} ETH @ ${leverage}x`);
+
+                const underlyingSlippageBps = UNDERLYING_SLIPPAGE_BPS;
+                const debtSlippageBps = DEBT_SLIPPAGE_BPS;
+
+                const capacityYield = await contracts.vault.getDepositCapacity();
+                if (capacityYield.gt(0)) {
+                    const stEthShares = await contracts.steth.getSharesByPooledEth(deposit);
+                    const expectedYield = await contracts.wsteth.getWstETHByStETH(stEthShares);
+                    if (expectedYield.gt(capacityYield)) {
+                        const maxUnderlying = await contracts.alchemist.convertYieldTokensToUnderlying(capacityYield);
+                        deposit = maxUnderlying;
+                        log('Deposit clamped by vault capacity; using smaller amount', 'warning');
+                    }
+                }
+                if (deposit.isZero()) {
+                    log('Deposit amount is zero after capacity checks', 'error');
+                    return;
+                }
+
+                log('Depositing ETH into vault pool...');
+                const depositTx = await contracts.vault["depositUnderlying()"]({ value: deposit });
+                await depositTx.wait();
+
+                const expectedShares = await contracts.steth.getSharesByPooledEth(deposit);
+                const expectedYieldFromDeposit = await contracts.wsteth.getWstETHByStETH(expectedShares);
+                const basisPoints = ethers.BigNumber.from(10000);
+                const underlyingDepositMin = expectedYieldFromDeposit
+                    .mul(basisPoints.sub(underlyingSlippage))
+                    .div(basisPoints);
+                const flashLoanAdapter = contracts.addresses.aaveFlashLoanAdapter || contracts.addresses.flashLoanAdapter;
+                const flashLoanAdapterContract = new ethers.Contract(
+                    flashLoanAdapter,
+                    FLASHLOAN_ADAPTER_ABI,
+                    signer
+                );
+                if (contracts.addresses.aaveFlashLoanAdapter) {
+                    log('Using Aave V3 flash loan adapter (5 bps)', 'info');
+                }
+
+                const leverageBps = Math.round(leverage * 10000);
+                let flashLoanAmount = deposit.mul(leverageBps - 10000).div(10000);
+                let mintAmount = ethers.constants.Zero;
+                let debtTradeMin = ethers.constants.Zero;
+                let flashLoanFee = ethers.constants.Zero;
+
+                if (flashLoanAmount.gt(0)) {
+                    const oneDebt = ethers.utils.parseEther('1');
+                    const rateQuote = await contracts.swapper.previewSwapDebtToUnderlying(oneDebt);
+                    const expectedUnderlyingPerDebt = rateQuote.expectedUnderlying;
+                    if (expectedUnderlyingPerDebt.isZero()) {
+                        log('Unable to fetch swap rate from Curve', 'error');
+                        return;
+                    }
+
+                    const minColl = await contracts.alchemist.minimumCollateralization();
+                    const totalUnderlying = deposit.add(flashLoanAmount);
+                    const maxDebt = totalUnderlying.mul(ethers.constants.WeiPerEther).div(minColl);
+
+                    const bufferBps = Math.max(200, debtSlippageBps);
+                    const bufferUp = ethers.BigNumber.from(10000 + bufferBps);
+                    const bufferDown = ethers.BigNumber.from(10000 - bufferBps);
+
+                    mintAmount = flashLoanAmount
+                        .mul(ethers.constants.WeiPerEther)
+                        .div(expectedUnderlyingPerDebt);
+                    mintAmount = mintAmount.mul(bufferUp).div(10000);
+
+                    if (mintAmount.gt(maxDebt)) {
+                        const maxFlashLoan = maxDebt.mul(expectedUnderlyingPerDebt).div(ethers.constants.WeiPerEther);
+                        flashLoanAmount = maxFlashLoan.mul(bufferDown).div(10000);
+                        mintAmount = flashLoanAmount
+                            .mul(ethers.constants.WeiPerEther)
+                            .div(expectedUnderlyingPerDebt);
+                        mintAmount = mintAmount.mul(bufferUp).div(10000);
+                        log('Flash loan capped to avoid undercollateralization', 'warning');
+                    }
+
+                    flashLoanFee = await flashLoanAdapterContract.getFlashLoanFee(WETH, flashLoanAmount);
+                    let repayTarget = flashLoanAmount.add(flashLoanFee);
+
+                    const debtQuote = await contracts.swapper.previewSwapDebtToUnderlying(mintAmount);
+                    const expectedUnderlying = debtQuote.expectedUnderlying;
+                    debtTradeMin = expectedUnderlying
+                        .mul(basisPoints.sub(debtSlippageBps))
+                        .div(basisPoints);
+
+                    if (debtTradeMin.lt(repayTarget)) {
+                        flashLoanAmount = debtTradeMin.mul(bufferDown).div(10000);
+                        if (flashLoanAmount.isZero()) {
+                            mintAmount = ethers.constants.Zero;
+                            debtTradeMin = ethers.constants.Zero;
+                            flashLoanFee = ethers.constants.Zero;
+                        } else {
+                            flashLoanFee = await flashLoanAdapterContract.getFlashLoanFee(WETH, flashLoanAmount);
+                            repayTarget = flashLoanAmount.add(flashLoanFee);
+                            mintAmount = flashLoanAmount
+                                .mul(ethers.constants.WeiPerEther)
+                                .div(expectedUnderlyingPerDebt);
+                            mintAmount = mintAmount.mul(bufferUp).div(10000);
+                            const updatedQuote = await contracts.swapper.previewSwapDebtToUnderlying(mintAmount);
+                            const updatedExpected = updatedQuote.expectedUnderlying;
+                            debtTradeMin = updatedExpected
+                                .mul(basisPoints.sub(debtSlippageBps))
+                                .div(basisPoints);
+                        }
+                        log('Flash loan reduced to ensure repayment', 'warning');
+                    }
+                }
+
+                if (flashLoanAmount.isZero()) {
+                    log('Leverage is 1x; deposit left in pool', 'info');
+                    await refreshBalances();
+                    return;
+                }
+                if (mintAmount.isZero()) {
+                    log('Mint amount is zero; adjust leverage', 'error');
+                    return;
+                }
+
+                log(`Flash loan: ${ethers.utils.formatEther(flashLoanAmount)} WETH`);
+                if (flashLoanFee.gt(0)) {
+                    log(`Flash loan fee: ${ethers.utils.formatEther(flashLoanFee)} WETH`);
+                }
+                log(`Debt to mint: ${ethers.utils.formatEther(mintAmount)} alETH`);
+                log(`Min swap output: ${ethers.utils.formatEther(debtTradeMin)} WETH`);
+
+                log('Executing leverage transaction via LeveragedVault...');
+                const tx = await contracts.vault.leverageWithAdapters(
+                    deposit,
+                    flashLoanAmount,
+                    underlyingDepositMin,
+                    mintAmount,
+                    debtTradeMin,
+                    contracts.addresses.converter,
+                    flashLoanAdapter,
+                    contracts.addresses.swapper
+                );
+                const receipt = await tx.wait();
+
+                log(`Leverage executed! TX: ${receipt.transactionHash}`, 'success');
+                await refreshBalances();
+            } catch (error) {
+                log(`Error executing leverage: ${error.message}`, 'error');
+                console.error(error);
+            }
+        }
+
+        async function executeDeleverage() {
+            log('Starting deleverage execution...', 'info');
+            try {
+                const userShares = await contracts.vault.balanceOf(userAddress);
+                if (userShares.isZero()) {
+                    log('No vault shares to withdraw', 'error');
+                    return;
+                }
+
+                const input = document.getElementById('withdrawAmount').value;
+                let sharesToWithdraw = userShares;
+                if (input && parseFloat(input) > 0) {
+                    sharesToWithdraw = ethers.utils.parseEther(input);
+                    if (sharesToWithdraw.gt(userShares)) {
+                        log('Withdraw amount exceeds your share balance', 'error');
+                        return;
+                    }
+                }
+
+                const underlyingSlippage = UNDERLYING_SLIPPAGE_BPS;
+                const debtSlippage = DEBT_SLIPPAGE_BPS;
+                const flashLoanAdapter = contracts.addresses.aaveFlashLoanAdapter || contracts.addresses.flashLoanAdapter;
+                const flashLoanAdapterContract = new ethers.Contract(
+                    flashLoanAdapter,
+                    FLASHLOAN_ADAPTER_ABI,
+                    signer
+                );
+                if (contracts.addresses.aaveFlashLoanAdapter) {
+                    log('Using Aave V3 flash loan adapter (5 bps)', 'info');
+                }
+
+                log(`Withdrawing ${ethers.utils.formatEther(sharesToWithdraw)} vault shares...`);
+                log('Executing deleverage transaction via LeveragedVault...');
+                const [
+                    flashLoanAmount,
+                    burnAmount,
+                    minUnderlyingOut
+                ] = await contracts.vault.getWithdrawUnderlyingParameters(
+                    sharesToWithdraw,
+                    underlyingSlippage,
+                    debtSlippage
+                );
+                if (flashLoanAmount.gt(0)) {
+                    const flashLoanFee = await flashLoanAdapterContract.getFlashLoanFee(WETH, flashLoanAmount);
+                    log(`Flash loan: ${ethers.utils.formatEther(flashLoanAmount)} WETH`, 'info');
+                    if (flashLoanFee.gt(0)) {
+                        log(`Flash loan fee: ${ethers.utils.formatEther(flashLoanFee)} WETH`, 'info');
+                    }
+                }
+                const tx = await contracts.vault.withdrawUnderlyingWithAdapters(
+                    sharesToWithdraw,
+                    flashLoanAmount,
+                    burnAmount,
+                    minUnderlyingOut,
+                    contracts.addresses.converter,
+                    flashLoanAdapter,
+                    contracts.addresses.swapper
+                );
+                const receipt = await tx.wait();
+
+                log(`Deleverage executed! TX: ${receipt.transactionHash}`, 'success');
+                await refreshBalances();
+            } catch (error) {
+                log(`Error executing deleverage: ${error.message}`, 'error');
+                console.error(error);
+            }
+        }
+
+        // Initialize
+        document.getElementById('depositAmount').addEventListener('input', updateLeveragePreview);
+        window.addEventListener('load', connectWallet);
+    </script>
+</body>
+</html>
+        }
+
+        async function executeDeleverage() {
+            log('Starting deleverage execution...', 'info');
+            try {
+                const userShares = await contracts.vault.balanceOf(userAddress);
+                if (userShares.isZero()) {
+                    log('No vault shares to withdraw', 'error');
+                    return;
+                }
+
+                const input = document.getElementById('withdrawAmount').value;
+                let sharesToWithdraw = userShares;
+                if (input && parseFloat(input) > 0) {
+                    sharesToWithdraw = ethers.utils.parseEther(input);
+                    if (sharesToWithdraw.gt(userShares)) {
+                        log('Withdraw amount exceeds your share balance', 'error');
+                        return;
+                    }
+                }
+
+                const [underlyingSlippage, debtSlippage] = await Promise.all([
+                const debtSlippage = DEBT_SLIPPAGE_BPS;
+
+                log(`Withdrawing ${ethers.utils.formatEther(sharesToWithdraw)} vault shares...`);
+                log('Executing deleverage transaction via LeveragedVault...');
+                const tx = await contracts.vault.withdrawUnderlyingAtomic(
+                    sharesToWithdraw,
+                    underlyingSlippage,
+                    debtSlippage
+                );
+                const receipt = await tx.wait();
+
+                log(`Deleverage executed! TX: ${receipt.transactionHash}`, 'success');
+                await refreshBalances();
+            } catch (error) {
+                log(`Error executing deleverage: ${error.message}`, 'error');
+                console.error(error);
+            }
+        }
+
+        // Initialize
+        document.getElementById('depositAmount').addEventListener('input', updateLeveragePreview);
+        window.addEventListener('load', connectWallet);
+    </script>
+</body>
+</html>
+                   debtSlippage
+                );
+                const receipt = await tx.wait();
+
+                log(`Deleverage executed! TX: ${receipt.transactionHash}`, 'success');
+                await refreshBalances();
+            } catch (error) {
+                log(`Error executing deleverage: ${error.message}`, 'error');
+                console.error(error);
+            }
+        }
+
+        // Initialize
+        document.getElementById('depositAmount').addEventListener('input', updateLeveragePreview);
+        window.addEventListener('load', connectWallet);
+    </script>
+</body>
+</html>
+ ${ethers.utils.formatEther(mintAmount)} alETH`);
+                log(`Min yield from deposit: ${ethers.utils.formatEther(underlyingDepositMin)} wstETH`);
+                log(`Min swap output: ${ethers.utils.formatEther(debtTradeMin)} WETH`);
+
+                log('Executing leverage transaction via LeveragedVault...');
+                const tx = await contracts.vault.leverage(
+                    deposit,
+                    flashLoanAmount,
+                    underlyingDepositMin,
+                    mintAmount,
+                    debtTradeMin
+                );
+                const receipt = await tx.wait();
+
+                log(`Leverage executed! TX: ${receipt.transactionHash}`, 'success');
+                await refreshBalances();
+            } catch (error) {
+                log(`Error executing leverage: ${error.message}`, 'error');
+                console.error(error);
+            }
+        }
+
+        async function executeDeleverage() {
+            log('Starting deleverage execution...', 'info');
+            try {
+                const userShares = await contracts.vault.balanceOf(userAddress);
+                if (userShares.isZero()) {
+                    log('No vault shares to withdraw', 'error');
+                    return;
+                }
+
+                const input = document.getElementById('withdrawAmount').value;
+                let sharesToWithdraw = userShares;
+                if (input && parseFloat(input) > 0) {
+                    sharesToWithdraw = ethers.utils.parseEther(input);
+                    if (sharesToWithdraw.gt(userShares)) {
+                        log('Withdraw amount exceeds your share balance', 'error');
+                        return;
+                    }
+                }
+
+                const [underlyingSlippage, debtSlippage] = await Promise.all([
+                const debtSlippage = DEBT_SLIPPAGE_BPS;
+
+                log(`Withdrawing ${ethers.utils.formatEther(sharesToWithdraw)} vault shares...`);
+                log('Executing deleverage transaction via LeveragedVault...');
+                const tx = await contracts.vault.withdrawUnderlyingAtomic(
+                    sharesToWithdraw,
+                    underlyingSlippage,
+                    debtSlippage
+                );
+                const receipt = await tx.wait();
+
+                log(`Deleverage executed! TX: ${receipt.transactionHash}`, 'success');
+                await refreshBalances();
+            } catch (error) {
+                log(`Error executing deleverage: ${error.message}`, 'error');
+                console.error(error);
+            }
+        }
+
+        // Initialize
+        document.getElementById('depositAmount').addEventListener('input', updateLeveragePreview);
+        window.addEventListener('load', connectWallet);
+    </script>
+</body>
+</html>

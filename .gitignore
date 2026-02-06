@@ -13,3 +13,12 @@ out/
 
 # Dotenv file
 .env
+
+# Windows metadata
+*:Zone.Identifier
+
+# Generated files
+dapp/src/contracts.json
+
+# Local development
+/tmp/anvil.log

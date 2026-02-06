@@ -4,33 +4,72 @@ pragma solidity 0.8.26;
 
 import "./interfaces/ILeveragedVaultFactory.sol";
 import "./LeveragedVault.sol";
-import "lib/openzeppelin-contracts/contracts/utils/ReentrancyGuard.sol";
 import "lib/openzeppelin-contracts/contracts/access/Ownable.sol";
 
-contract LeveragedVaultFactory is ILeveragedVaultFactory, ReentrancyGuard, Ownable {   
+contract LeveragedVaultFactory is ILeveragedVaultFactory, Ownable {   
     mapping (address => address) public vaults;
 
     constructor() Ownable(msg.sender) {}
 
-    function createVault(string memory tokenName,
-                         string memory tokenDescription,
-                         address yieldToken,
-                         address underlyingToken,
-                         address leverager,
-                         address debtSource,
-                         uint32 underlyingSlippageBasisPoints,
-                         uint32 debtSlippageBasisPoints) external onlyOwner returns (address vault) {
-        require(vaults[yieldToken] == address(0), "Vault already exists");
-        //something also needs to create the leverager and pass that address in
+    function _requireContract(address target, string memory errorMessage) internal view {
+        require(target.code.length > 0, errorMessage);
+    }
 
-        vault = address(new LeveragedVault(tokenName,
-                                           tokenDescription,
-                                           yieldToken,
-                                           underlyingToken,
-                                           leverager,
-                                           debtSource,
-                                           underlyingSlippageBasisPoints,
-                                           debtSlippageBasisPoints));
+    function createVault(
+        string memory tokenName,
+        string memory tokenDescription,
+        address yieldToken,
+        address underlyingToken,
+        address alchemist,
+        address leverager,
+        uint32 underlyingSlippageBasisPoints,
+        uint32 debtSlippageBasisPoints,
+        address defaultConverter,
+        address defaultFlashLoanAdapter,
+        address defaultSwapper,
+        address weth
+    ) external onlyOwner returns (address vault) {
+        require(yieldToken != address(0), "Yield token cannot be 0");
+        require(underlyingToken != address(0), "Underlying token cannot be 0");
+        require(alchemist != address(0), "Alchemist cannot be 0");
+        require(leverager != address(0), "Leverager cannot be 0");
+        require(weth != address(0), "WETH cannot be 0");
+        require(defaultConverter != address(0), "Default converter cannot be 0");
+        require(defaultFlashLoanAdapter != address(0), "Default flash loan adapter cannot be 0");
+        require(defaultSwapper != address(0), "Default swapper cannot be 0");
+        require(underlyingSlippageBasisPoints < 10000, "Underlying slippage basis points must be less than 10000");
+        require(debtSlippageBasisPoints < 10000, "Debt slippage basis points must be less than 10000");
+        require(vaults[yieldToken] == address(0), "Vault already exists for yield token");
+
+        _requireContract(yieldToken, "Yield token must be a contract");
+        _requireContract(underlyingToken, "Underlying token must be a contract");
+        _requireContract(alchemist, "Alchemist must be a contract");
+        _requireContract(leverager, "Leverager must be a contract");
+        _requireContract(weth, "WETH must be a contract");
+        _requireContract(defaultConverter, "Default converter must be a contract");
+        _requireContract(defaultFlashLoanAdapter, "Flash loan adapter must be a contract");
+        _requireContract(defaultSwapper, "Swapper must be a contract");
+
+        LeveragedVault newVault = new LeveragedVault(
+            tokenName,
+            tokenDescription,
+            yieldToken,
+            underlyingToken,
+            alchemist,
+            leverager,
+            underlyingSlippageBasisPoints,
+            debtSlippageBasisPoints,
+            defaultConverter,
+            defaultFlashLoanAdapter,
+            defaultSwapper,
+            weth
+        );
+        vault = address(newVault);
         vaults[yieldToken] = vault;
+
+        // Transfer vault ownership to the caller (factory owner)
+        newVault.transferOwnership(msg.sender);
+
+        emit VaultCreated(vault, yieldToken, alchemist, leverager);
     }
 }
