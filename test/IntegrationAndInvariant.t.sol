@@ -490,28 +490,11 @@ contract FullIntegrationTest is Test {
 
     // ============ Admin Function Validation Tests ============
 
-    function test_SetDefaultConverter_RejectsZeroAddress() public {
-        vm.prank(owner);
-        vm.expectRevert("Converter cannot be zero");
-        vault.setDefaultConverter(address(0));
-    }
-
-    function test_SetDefaultFlashLoanAdapter_RejectsZeroAddress() public {
-        vm.prank(owner);
-        vm.expectRevert("Flash loan adapter cannot be zero");
-        vault.setDefaultFlashLoanAdapter(address(0));
-    }
-
-    function test_SetDefaultSwapper_RejectsZeroAddress() public {
-        vm.prank(owner);
-        vm.expectRevert("Swapper cannot be zero");
-        vault.setDefaultSwapper(address(0));
-    }
-
-    function test_SetDefaultAdapters_RejectsZeroAddress() public {
-        vm.prank(owner);
-        vm.expectRevert("Converter cannot be zero");
-        vault.setDefaultAdapters(address(0), address(flashLoanAdapter), address(swapper));
+    function test_AdaptersAreImmutable() public view {
+        // Adapters are set at construction and cannot be changed
+        assertEq(vault.defaultConverter(), address(converter), "Converter should be set at construction");
+        assertEq(vault.defaultFlashLoanAdapter(), address(flashLoanAdapter), "Flash loan adapter should be set at construction");
+        assertEq(vault.defaultSwapper(), address(swapper), "Swapper should be set at construction");
     }
 
     // ============ Emergency Sweep Tests ============

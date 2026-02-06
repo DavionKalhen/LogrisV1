@@ -56,12 +56,12 @@ contract LeveragedVault is Ownable, ERC4626, ReentrancyGuard, Pausable, ILeverag
 
     // ============ Default Adapters (V3) ============
 
-    /// @notice Default token converter (underlying ↔ yield)
-    address public defaultConverter;
-    /// @notice Default flash loan adapter
-    address public defaultFlashLoanAdapter;
-    /// @notice Default swapper (debt ↔ underlying)
-    address public defaultSwapper;
+    /// @notice Default token converter (underlying ↔ yield), set at construction
+    address public immutable defaultConverter;
+    /// @notice Default flash loan adapter, set at construction
+    address public immutable defaultFlashLoanAdapter;
+    /// @notice Default swapper (debt ↔ underlying), set at construction
+    address public immutable defaultSwapper;
 
     // ============ Default Slippage Parameters ============
 
@@ -74,7 +74,6 @@ contract LeveragedVault is Ownable, ERC4626, ReentrancyGuard, Pausable, ILeverag
 
     event VaultLeveraged(uint256 depositAmount, uint256 flashLoanAmount, uint256 debtMinted);
     event VaultDeleveraged(uint256 sharesWithdrawn, uint256 debtBurned);
-    event DefaultAdapterSet(string adapterType, address adapter);
     event SlippageParametersUpdated(uint32 underlyingSlippageBps, uint32 debtSlippageBps);
 
     // ============ Modifiers ============
@@ -116,6 +115,9 @@ contract LeveragedVault is Ownable, ERC4626, ReentrancyGuard, Pausable, ILeverag
         require(yieldToken != address(0), "Yield token cannot be zero");
         require(underlyingTokenAddress != address(0), "Underlying token cannot be zero");
         require(_weth != address(0), "WETH cannot be zero");
+        require(_defaultConverter != address(0), "Converter cannot be zero");
+        require(_defaultFlashLoanAdapter != address(0), "Flash loan adapter cannot be zero");
+        require(_defaultSwapper != address(0), "Swapper cannot be zero");
         alchemist = IAlchemistV3(_alchemist);
         leverager = _leverager;
         _underlyingToken = IERC20(underlyingTokenAddress);
@@ -835,44 +837,6 @@ contract LeveragedVault is Ownable, ERC4626, ReentrancyGuard, Pausable, ILeverag
 
     function unpause() external onlyOwner {
         _unpause();
-    }
-
-    /// @notice Set the default token converter
-    function setDefaultConverter(address _converter) external onlyOwner {
-        require(_converter != address(0), "Converter cannot be zero");
-        defaultConverter = _converter;
-        emit DefaultAdapterSet("converter", _converter);
-    }
-
-    /// @notice Set the default flash loan adapter
-    function setDefaultFlashLoanAdapter(address _adapter) external onlyOwner {
-        require(_adapter != address(0), "Flash loan adapter cannot be zero");
-        defaultFlashLoanAdapter = _adapter;
-        emit DefaultAdapterSet("flashLoanAdapter", _adapter);
-    }
-
-    /// @notice Set the default swapper
-    function setDefaultSwapper(address _swapper) external onlyOwner {
-        require(_swapper != address(0), "Swapper cannot be zero");
-        defaultSwapper = _swapper;
-        emit DefaultAdapterSet("swapper", _swapper);
-    }
-
-    /// @notice Set all default adapters at once
-    function setDefaultAdapters(
-        address _converter,
-        address _flashLoanAdapter,
-        address _swapper
-    ) external onlyOwner {
-        require(_converter != address(0), "Converter cannot be zero");
-        require(_flashLoanAdapter != address(0), "Flash loan adapter cannot be zero");
-        require(_swapper != address(0), "Swapper cannot be zero");
-        defaultConverter = _converter;
-        defaultFlashLoanAdapter = _flashLoanAdapter;
-        defaultSwapper = _swapper;
-        emit DefaultAdapterSet("converter", _converter);
-        emit DefaultAdapterSet("flashLoanAdapter", _flashLoanAdapter);
-        emit DefaultAdapterSet("swapper", _swapper);
     }
 
     /// @notice Set default slippage parameters
