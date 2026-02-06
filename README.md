@@ -1,332 +1,472 @@
-# Alchemix Leveraged Vaults (LogrisV1)
+# Logris V1 — Leveraged Yield Vaults for Alchemix V3
 
-ERC4626-based vault system that enables leveraged positions in Alchemist V3 using flash loans for capital efficiency.
+Logris creates **leveraged yield positions** on top of Alchemix V3. Users deposit underlying tokens (e.g., WETH), and the protocol amplifies their exposure to self-repaying yield through flash loans and automated position management.
 
-## Table of Contents
+## How It Works
 
-- [Overview](#overview)
-- [Quick Start](#quick-start)
-- [Architecture](#architecture)
-- [Installation](#installation)
-- [Configuration](#configuration)
-- [Testing](#testing)
-- [Local Development](#local-development)
-- [Project Structure](#project-structure)
-- [Documentation](#documentation)
-- [Security](#security-considerations)
-
-## Overview
-
-LogrisV1 is a DeFi leverage system that allows users to pool funds and automatically create leveraged positions in Alchemist V3. The system uses flash loans for capital-efficient leverage execution and implements a proportional share distribution mechanism with efficiency bonuses.
-
-**Key Features:**
-- ERC4626-compliant tokenized vault for multi-user deposits
-- Single vault position shared proportionally by all users
-- Flash loan integration (Balancer) for capital efficiency
-- Leverage efficiency bonus system rewarding optimal capital use
-- NFT-based position management compatible with Alchemist V3
-
-## Quick Start
-
-```bash
-# Clone and install
-git clone https://github.com/your-org/LogrisV1.git
-cd LogrisV1
-forge install
-
-# Build
-forge build
-
-# Run tests
-forge test
-
-# Start local development environment (mainnet fork)
-./script/start-local.sh
+```
+User deposits WETH
+    ↓
+Convert WETH → wstETH (via Lido)
+    ↓
+Deposit wstETH into AlchemistV3
+    ↓
+Mint alETH debt against collateral
+    ↓
+Swap alETH → WETH (via Curve)
+    ↓
+Repeat with flash loan amplification
 ```
 
-See [Local Testing Guide](docs/local-testing.md) for detailed local development instructions.
+All depositors share a single leveraged position proportionally through ERC4626 vault shares. The yield from the leveraged wstETH position accrues to all share holders — Alchemix's self-repaying mechanism gradually pays down the debt, increasing the net value per share over time.
 
 ## Architecture
 
-![Architecture Overview](docs/AlchemixLeveragedVaultsOverview.png)
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                       LeveragedVault                            │
+│                    (ERC4626, per Alchemist)                      │
+│  - Holds user deposits (WETH)                                   │
+│  - Manages single AlchemistV3 position NFT                      │
+│  - Stores default adapters + slippage parameters                │
+│  - Enforces minimum slippage on debt swaps (sandwich protection)│
+└─────────────────────────┬───────────────────────────────────────┘
+                          │
+┌─────────────────────────▼───────────────────────────────────────┐
+│                       V3Leverager                               │
+│                (Shared across all vaults)                        │
+│  - Registry-based adapter approval (owner-controlled)           │
+│  - Executes leverage/deleverage via flash loans                 │
+│  - Validates adapters before every operation                    │
+└─────────────────────────┬───────────────────────────────────────┘
+              ┌───────────┼───────────┐
+              │           │           │
+    ┌─────────▼─────┐ ┌───▼───┐ ┌─────▼─────┐
+    │  Converters   │ │ Flash │ │  Swappers  │
+    │(ITokenConv.)  │ │ Loan  │ │ (ISwapper) │
+    │               │ │Adapters│ │           │
+    │ WETHToWstETH  │ │       │ │CurveSwapper│
+    │  Converter    │ │Balancer│ │           │
+    └───────────────┘ │Aave V3│ └───────────┘
+                      │Euler  │
+                      └───────┘
+```
 
-### Core Components
+### Key Design Decisions
 
-| Contract | Purpose |
+- **One leverager, many vaults.** A single `V3Leverager` instance serves all vaults. Adapters are approved via a registry — no need to redeploy when adding new flash loan sources or swap routes.
+
+- **Modular adapters.** Converters (WETH↔wstETH), flash loan providers (Balancer/Aave/Euler), and swappers (Curve alETH↔WETH) are independent contracts behind common interfaces. Any combination can be used per operation.
+
+- **Default + override pattern.** Each vault stores default adapters and slippage parameters. Users can call `leverage()` with defaults, `leverageAtomic()` for a one-call experience, or `leverageWithAdapters()` to override everything.
+
+- **Shared position.** All depositors in a vault share one AlchemistV3 position NFT. Share value tracks the net position value (collateral minus debt, converted to underlying).
+
+## Contract Reference
+
+### LeveragedVault
+
+The main user-facing contract. Inherits ERC4626 for share accounting.
+
+#### Depositing
+
+| Function | Description |
+|----------|-------------|
+| `depositUnderlying(uint256 amount)` | Deposit WETH (requires ERC20 approval) |
+| `depositUnderlying()` payable | Deposit ETH (auto-wraps to WETH) |
+
+Both return the number of vault shares minted. The first depositor receives shares 1:1 with their deposit.
+
+#### Leveraging
+
+| Function | Description |
+|----------|-------------|
+| `leverage(clampedDeposit, flashLoanAmount, underlyingDepositMin, mintAmount, debtTradeMin)` | Execute with explicit parameters |
+| `leverageAtomic(depositAmount, underlyingSlippageBps, debtSlippageBps)` | One-call convenience — computes all parameters internally |
+| `leverageWithAdapters(...)` | Execute with explicit parameters AND custom adapters |
+
+The leverage flow:
+1. Convert pool's underlying (WETH) → yield tokens (wstETH)
+2. Flash loan additional underlying for amplification
+3. Convert flash-loaned underlying → yield tokens
+4. Deposit all yield tokens into AlchemistV3
+5. Mint debt tokens (alETH) against the collateral
+6. Swap debt → underlying to repay flash loan
+7. Return surplus to user
+
+**Slippage protection:** The vault enforces minimum slippage on all leverage calls. If the vault's `debtSlippageBasisPoints` is set to 400 (4%), then `debtTradeMin` must be at least `mintAmount * 92/100` (2x the configured slippage as floor). This prevents sandwich attacks where a caller passes `debtTradeMin = 0`.
+
+#### Withdrawing
+
+| Function | Description |
+|----------|-------------|
+| `withdrawUnderlying(shares, flashLoanAmount, burnAmount, minUnderlyingOut)` | Withdraw with explicit deleverage parameters |
+| `withdrawUnderlyingAtomic(shares, underlyingSlippageBps, debtSlippageBps)` | One-call convenience |
+| `withdrawUnderlyingWithAdapters(...)` | Withdraw with custom adapters |
+
+Three withdrawal paths depending on the vault state:
+1. **Pool has enough:** Direct transfer from the unleveraged pool balance
+2. **Free collateral available:** Withdraw from AlchemistV3 without burning debt
+3. **Full deleverage:** Flash loan → swap to debt → burn debt → withdraw collateral → convert → repay
+
+#### View Functions
+
+| Function | Returns |
 |----------|---------|
-| **LeveragedVault** | ERC4626 vault that pools user deposits and manages a single Alchemist V3 position |
-| **AlchemistV3Base** | Base contract for Alchemist V3 interactions (NFT-based positions) |
-| **V3Leverager** | Modular leverager coordinating flash loans, swaps, and conversions |
-| **FlashLoanAdapters** | Balancer/Aave/Euler adapters behind a unified interface |
-| **CurveSwapper / CurvePoolSwapper** | Curve swap integrations for debt repayment |
-| **WETHToWstETHConverter** | Underlying ↔ yield token conversion via Curve stETH pool |
-| **AlchemixV3DebtAdapter** | Adapter for Alchemist V3 debt token operations |
-| **AlchemistV3LeverageCalculator** | Mathematical engine for optimal leverage calculations |
-| **ISwapper / ITokenConverter** | DEX/converter interfaces used by the leverager |
+| `getDepositPoolBalance()` | WETH sitting in vault (not yet leveraged) |
+| `getVaultDepositedBalance()` | Total collateral in AlchemistV3 position |
+| `getVaultDebtBalance()` | Current debt in AlchemistV3 position |
+| `getVaultRedeemableBalance()` | Net value (pool + collateral - debt) |
+| `getDepositCapacity()` | Remaining AlchemistV3 deposit capacity |
+| `getBorrowCapacity()` | How much more debt can be minted |
+| `getFreeWithdrawCapacity()` | Collateral withdrawable without deleveraging |
+| `convertSharesToUnderlyingTokens(shares)` | Underlying value of shares |
+| `convertUnderlyingTokensToShares(amount)` | Shares for a given underlying amount |
+| `getLeverageParameters(depositAmount)` | Compute all leverage params using vault defaults |
+| `getWithdrawUnderlyingParameters(shares)` | Compute all withdraw params using vault defaults |
 
-### Leverage Flow
+#### Admin Functions (onlyOwner)
+
+| Function | Description |
+|----------|-------------|
+| `pause()` / `unpause()` | Emergency pause all deposits, leverage, and withdrawals |
+| `setDefaultConverter(address)` | Change the default token converter |
+| `setDefaultFlashLoanAdapter(address)` | Change the default flash loan source |
+| `setDefaultSwapper(address)` | Change the default debt↔underlying swapper |
+| `setDefaultAdapters(converter, flashLoan, swapper)` | Set all three at once |
+| `setSlippageParameters(underlyingBps, debtBps)` | Update default slippage tolerance |
+| `emergencySweepToken(token, amount, recipient)` | Recover stuck ERC20 tokens |
+| `sweepUnknownPosition(tokenId, to)` | Transfer an unexpected position NFT out |
+
+### LeveragedVaultFactory
+
+Deploys new `LeveragedVault` instances with full parameter validation.
+
+```solidity
+factory.createVault(
+    "lvWSTETH",                    // token name
+    "Leveraged wstETH Vault",      // token symbol
+    WSTETH,                        // yield token
+    WETH,                          // underlying token
+    address(alchemist),            // AlchemistV3 address
+    address(leverager),            // V3Leverager address
+    100,                           // 1% underlying slippage default
+    400,                           // 4% debt slippage default (includes peg)
+    address(converter),            // default converter
+    address(flashLoanAdapter),     // default flash loan adapter
+    address(swapper),              // default swapper
+    WETH                           // WETH address
+);
+```
+
+The factory validates all addresses are non-zero contracts, checks slippage bounds, prevents duplicate vaults per yield token, and transfers ownership of the created vault to the caller.
+
+### V3Leverager
+
+Shared leverager that executes leverage/deleverage operations. Uses a registry pattern for adapter approval.
+
+```solidity
+// Owner approves adapters
+leverager.setConverterApproval(address(converter), true);
+leverager.setFlashLoanAdapterApproval(address(balancerAdapter), true);
+leverager.setSwapperApproval(address(curveSwapper), true);
+
+// Or batch approve
+leverager.batchApprove(converters, flashLoanAdapters, swappers);
+```
+
+Every leverage/deleverage call validates that the specified adapters are approved before executing. The leverager uses a state machine (`Idle → Leverage/Deleverage → Idle`) to ensure flash loan callbacks are only processed during active operations.
+
+### Adapters
+
+#### Flash Loan Adapters
+
+| Adapter | Provider | Fee | Constructor |
+|---------|----------|-----|-------------|
+| `BalancerFlashLoanAdapter` | Balancer V2 Vault | 0% | `(address balancerVault)` |
+| `AaveV3FlashLoanAdapter` | Aave V3 Pool | 0.05% | `(address aavePool)` |
+| `EulerFlashLoanAdapter` | Euler DTokens | 0% | `(address[] tokens, address[] dTokens)` |
+
+All adapters implement `IFlashLoanAdapter` and include:
+- Reentrancy protection (`nonReentrant`)
+- Pausability (`pause()` / `unpause()`)
+- Emergency withdrawal (`emergencyWithdraw()`)
+- Context validation on callbacks (prevents spoofed callbacks)
+
+#### CurveSwapper
+
+Swaps between alETH and WETH via Curve pool. Supports both ETH-native and ERC20 pool variants.
+
+```solidity
+swapper = new CurveSwapper(
+    CURVE_ALETH_POOL,   // Curve pool address
+    ALETH,              // debt token
+    WETH,               // underlying token
+    1,                  // ETH index in pool
+    0,                  // alETH index in pool
+    WETH,               // WETH address
+    false,              // true if pool uses native ETH
+    owner               // owner address
+);
+```
+
+#### WETHToWstETHConverter
+
+Converts between WETH and wstETH:
+- **toYield:** WETH → ETH → stETH (Lido submit) → wstETH
+- **toUnderlying:** wstETH → stETH (unwrap) → ETH (Curve swap) → WETH
+
+#### WstETHAdapter
+
+Token adapter for AlchemistV3 integration. Provides price oracle data for wstETH via `stEthPerToken()`.
+
+## Token Flow
+
+### Leverage Operation
 
 ```
-User → LeveragedVault (ERC4626) → Leverager → Flash Loan Provider
-                              ↑         ↓
-                              └─ Callback (deposit/mint/withdraw/burn)
+                    WETH (user deposit)
+                         │
+                    ┌────▼────┐
+                    │Converter│  WETH → wstETH (via Lido)
+                    └────┬────┘
+                         │
+              ┌──────────▼──────────┐
+              │   WETH (flash loan) │  From Balancer/Aave/Euler
+              └──────────┬──────────┘
+                         │
+                    ┌────▼────┐
+                    │Converter│  WETH → wstETH (via Lido)
+                    └────┬────┘
+                         │
+              ┌──────────▼──────────┐
+              │    AlchemistV3      │  Deposit wstETH, mint alETH
+              └──────────┬──────────┘
+                         │
+                    ┌────▼────┐
+                    │ Swapper │  alETH → WETH (via Curve)
+                    └────┬────┘
+                         │
+              ┌──────────▼──────────┐
+              │  Repay flash loan   │  Return WETH to adapter
+              └──────────┬──────────┘
+                         │
+                    Surplus → User
 ```
 
-1. User deposits underlying tokens to the vault
-2. Vault converts and holds yield tokens
-3. User initiates leverage operation
-4. Leverager takes flash loan, converts to yield tokens
-5. Leverager calls vault callbacks to deposit and mint debt
-6. Leverager swaps debt tokens to repay flash loan
-7. User receives shares proportional to their contribution + efficiency bonuses
+### Deleverage Operation
 
-## Installation
+```
+              ┌──────────────────────┐
+              │   WETH (flash loan)  │  From Balancer/Aave/Euler
+              └──────────┬───────────┘
+                         │
+                    ┌────▼────┐
+                    │ Swapper │  WETH → alETH (via Curve)
+                    └────┬────┘
+                         │
+              ┌──────────▼──────────┐
+              │    AlchemistV3      │  Burn alETH, withdraw wstETH
+              └──────────┬──────────┘
+                         │
+                    ┌────▼────┐
+                    │Converter│  wstETH → WETH (via Curve stETH/ETH)
+                    └────┬────┘
+                         │
+              ┌──────────▼──────────┐
+              │  Repay flash loan   │  Return WETH to adapter
+              └──────────┬──────────┘
+                         │
+                    Surplus → User
+```
+
+## Directory Structure
+
+```
+src/
+├── LeveragedVault.sol              # Main ERC4626 vault
+├── LeveragedVaultFactory.sol       # Factory for deploying vaults
+├── ERC4626.sol                     # Base ERC4626 implementation
+│
+├── leveragers/
+│   └── V3Leverager.sol             # Modular leverager with registry pattern
+│
+├── adapters/
+│   ├── flashloan/
+│   │   ├── BalancerFlashLoanAdapter.sol   # Balancer V2 (0% fee)
+│   │   ├── AaveV3FlashLoanAdapter.sol     # Aave V3 (0.05% fee)
+│   │   └── EulerFlashLoanAdapter.sol      # Euler Finance (0% fee)
+│   ├── CurveSwapper.sol            # alETH ↔ WETH via Curve
+│   └── WstETHAdapter.sol           # wstETH token adapter for AlchemistV3
+│
+├── converters/
+│   └── WETHToWstETHConverter.sol   # WETH ↔ wstETH via Lido + Curve
+│
+├── interfaces/
+│   ├── ILeveragerV3.sol            # Leverager interface + structs
+│   ├── ILeveragedVault.sol         # Vault interface
+│   ├── ILeveragedVaultCallback.sol # Vault callback interface
+│   ├── ILeveragedVaultFactory.sol  # Factory interface
+│   ├── ITokenConverter.sol         # Converter interface
+│   ├── ISwapper.sol                # Swapper interface
+│   ├── IERC4626.sol                # ERC4626 interface
+│   ├── flashloan/
+│   │   ├── IFlashLoanAdapter.sol   # Unified flash loan interface
+│   │   └── IFlashLoanCallback.sol  # Flash loan callback interface
+│   ├── alchemist/                  # AlchemistV3 interfaces
+│   ├── balancer/                   # Balancer V2 interfaces
+│   ├── curve/                      # Curve pool interfaces
+│   └── euler/                      # Euler Finance interfaces
+│
+└── config/
+    ├── MainnetAddresses.sol        # Mainnet contract addresses
+    └── NetworkConfig.sol           # Network configuration helper
+
+test/
+├── V3LeveragerModular.t.sol        # V3Leverager unit tests (760 lines)
+├── V3LeveragerE2E.t.sol            # E2E tests on mainnet fork (653 lines)
+├── IntegrationAndInvariant.t.sol   # Full integration + invariant tests (694 lines)
+├── IntegrationFork.t.sol           # Fork integration tests (820 lines)
+├── SecurityTests.t.sol             # Security-focused tests (721 lines)
+├── FuzzTests.t.sol                 # Fuzz tests for math (506 lines)
+├── FlashLoanAdapterFork.t.sol      # Flash loan adapter tests (516 lines)
+├── ERC4626.t.sol                   # ERC4626 compliance tests (370 lines)
+├── CurveSwapperFork.t.sol          # Curve swapper fork tests (362 lines)
+├── LeveragedVaultFactory.t.sol     # Factory validation tests (323 lines)
+├── CurveSwapperUnit.t.sol          # Curve swapper unit tests (268 lines)
+├── EdgeCases.t.sol                 # Edge case + gas tests (232 lines)
+├── VaultPositionInvariant.t.sol    # Position NFT invariant tests (206 lines)
+├── UnitMismatchTests.t.sol         # Unit conversion tests (180 lines)
+├── LeveragedVaultPause.t.sol       # Pause mechanism tests (118 lines)
+└── WETHToWstETHConverterConfig.t.sol # Converter config tests (82 lines)
+```
+
+## Building and Testing
 
 ### Prerequisites
 
 - [Foundry](https://book.getfoundry.sh/getting-started/installation) (forge, cast, anvil)
-- Git
-- Node.js 18+ (for frontend only)
+- Git (with submodule support)
 
-### Dependencies
-
-The project uses the following libraries (managed via `forge install`):
-
-| Library | Purpose |
-|---------|---------|
-| forge-std | Foundry testing framework |
-| openzeppelin-contracts | ERC20, ERC721, access control |
-| openzeppelin-contracts-upgradeable | Upgradeable contracts |
-| chainlink-brownie-contracts | Price feeds (if needed) |
-| alchemix-v3 | Alchemist V3 integration (submodule) |
-
-## Configuration
-
-### Solidity Version
-
-The project uses Solidity 0.8.26 as specified in `foundry.toml`.
-
-### Constructor Parameters
-
-When deploying `LeveragedVault`:
-
-```solidity
-LeveragedVault(
-    string memory tokenName,              // Vault token name (e.g., "alUSD Leverage Vault")
-    string memory tokenDescription,       // Vault token symbol (e.g., "aLV")
-    address alchemistV3,                  // Alchemist V3 contract address
-    address yieldToken,                   // Yield token (e.g., wstETH)
-    address underlyingToken,              // Underlying token (e.g., WETH)
-    address leverager,                    // Leverager contract address
-    address debtSource,                   // Debt adapter address
-    uint32 underlyingSlippageBasisPoints, // Slippage protection (100 = 1%)
-    uint32 debtSlippageBasisPoints,       // Slippage protection (300 = 3%)
-    address wETH                          // WETH contract address
-)
-```
-
-### Key Parameters
-
-| Parameter | Default | Description |
-|-----------|---------|-------------|
-| `underlyingSlippageBasisPoints` | 100 (1%) | Slippage tolerance for underlying token conversions |
-| `debtSlippageBasisPoints` | 300 (3%) | Slippage tolerance for debt token swaps |
-| Flash Loan Fee | 0% (Balancer V2 default) | Adapter exposes actual fee; Aave V3 varies |
-| Max LTV | 90% | Alchemist V3 loan-to-value ratio |
-| Max Bonus Cap | 25% | Maximum efficiency bonus on base shares |
-
-## Leverage Efficiency Bonuses
-
-The vault implements a leverage efficiency bonus system that rewards users for efficient capital use:
-
-| Bonus Type | Amount | Description |
-|------------|--------|-------------|
-| **Flash Loan Bonus** | 5% | Bonus for using flash loans |
-| **Leverage Bonus** | 2% per unit | Scales with leverage multiplier |
-| **Risk Bonus** | 1% per 10% debt ratio | Reward for taking on debt risk |
-| **Max Cap** | 25% of base shares | Total bonus cannot exceed this cap |
-
-## Vault Capacity Scenarios
-
-The leverage contract handles different capacity scenarios:
-
-1. **Full Vault**: Reverts if no capacity available
-2. **Deposit Only**: If capacity exists but no leverage headroom, deposits without leverage
-3. **Partial Leverage**: If capacity < max leverage, uses available capacity optimally
-4. **Full Leverage**: Uses architecture flow shown in diagram for maximum leverage
-
-## Testing
-
-### Run All Tests
+### Setup
 
 ```bash
-forge test
+# Clone with submodules
+git clone --recursive <repo-url>
+cd LogrisV1
+
+# Install dependencies
+forge install
 ```
 
-### Run Specific Test Categories
+### Build
 
 ```bash
-# Unit tests (mock-based, fast)
-forge test --match-path "test/LeveragedVaultTest.t.sol" -vvv
-forge test --match-path "test/AlchemistV3LeverageCalculator.t.sol" -vvv
-forge test --match-path "test/ERC4626.t.sol" -vvv
-
-# Fork tests (require RPC, slower)
-forge test --match-path "test/*Fork.t.sol" --fork-url $ETH_RPC_URL -vvv
-
-# End-to-end tests
-forge test --match-path "test/AlchemistV3E2E.t.sol" -vvv
+forge build
 ```
+
+### Running Tests
+
+```bash
+# Run all unit tests (no RPC required)
+forge test --no-match-path "test/*Fork*|test/*E2E*"
+
+# Run with verbose output
+forge test --no-match-path "test/*Fork*|test/*E2E*" -vv
+
+# Run a specific test contract
+forge test --match-contract V3LeveragerModularTest -vv
+
+# Run a specific test function
+forge test --match-test test_FullCycle_DepositLeverageWithdraw -vvvv
+```
+
+### Fork Tests
+
+Fork tests require an Ethereum mainnet RPC endpoint:
+
+```bash
+# Set your RPC URL
+export ETH_RPC_URL="https://eth-mainnet.g.alchemy.com/v2/YOUR_KEY"
+
+# Run fork tests
+forge test --match-path "test/*Fork*" -vv
+
+# Run E2E tests (deploy full stack on fork)
+forge test --match-contract V3LeveragerE2ETest -vv
+
+# Run all tests including fork tests
+forge test -vv
+```
+
+### Test Categories
+
+| Category | Command | Description |
+|----------|---------|-------------|
+| Unit | `forge test --match-contract V3LeveragerModularTest` | Registry, leverage, deleverage with mocks |
+| Fuzz | `forge test --match-contract LeveragedVaultFuzzTest` | Randomized share math, flash loan bounds |
+| Integration | `forge test --match-contract FullIntegrationTest` | Full deposit→leverage→withdraw cycle |
+| Invariant | `forge test --match-contract ShareValueInvariantTest` | Share value preservation under random ops |
+| Security | `forge test --match-contract SecurityTests` | Callback spoofing, slippage, reentrancy |
+| Factory | `forge test --match-contract LeveragedVaultFactoryTest` | Input validation, ownership |
+| Pause | `forge test --match-contract LeveragedVaultPauseTest` | Pause blocks all operations |
+| ERC4626 | `forge test --match-contract ERC4626Test` | Standard compliance |
+| E2E | `forge test --match-contract V3LeveragerE2ETest` | Real AlchemistV3 + Curve on fork |
 
 ### Test Summary
 
-```bash
-forge test --summary
-```
+- **284 tests total**, all passing
+- **15 fuzz tests** with 256 runs each for mathematical properties
+- **3 invariant tests** with random deposit/withdraw sequences
+- **12 E2E tests** on mainnet fork with real protocols
+- Automated audit tools run: **Slither** (Trail of Bits) and **Aderyn** (Cyfrin)
 
-### Test Coverage
+## Security Model
 
-```bash
-forge coverage
-```
+### Access Control
 
-## Local Development
+| Role | Permissions |
+|------|------------|
+| **Vault Owner** | Pause/unpause, set default adapters, set slippage, emergency sweep |
+| **Leverager Owner** | Approve/revoke adapters in registry |
+| **Anyone** | Deposit, withdraw, call leverage/deleverage (with slippage enforcement) |
 
-### Start Local Environment
+### Safety Mechanisms
 
-```bash
-# Start Anvil fork with all contracts deployed
-./script/start-local.sh
+- **Slippage enforcement:** Vault enforces minimum acceptable slippage on debt swaps to prevent sandwich attacks, even when `leverage()` is called with arbitrary parameters
+- **Reentrancy protection:** `nonReentrant` on all state-changing functions
+- **Concurrent operation guard:** `noConcurrentOperation` modifier prevents overlapping leverage/deleverage
+- **Flash loan callback validation:** State machine + initiator + caller checks prevent spoofed callbacks
+- **Adapter registry:** Only owner-approved adapters can be used by the leverager
+- **Pausable:** Owner can halt all vault operations in emergencies
+- **Emergency sweep:** Owner can recover stuck tokens from vault, adapters, and converters
+- **Position integrity:** Vault validates it owns exactly one AlchemistV3 position NFT
 
-# In a new terminal, start the frontend (optional)
-cd dapp && ./serve.sh
-```
+### Automated Audit Results
 
-The local environment:
-- Forks Ethereum mainnet at block 19,500,000
-- Deploys complete AlchemistV3 system
-- Deploys Leverager system (flash loans, swapper, leverager)
-- Outputs all contract addresses to `dapp/src/contracts.json`
+The codebase has been analyzed with:
+- **Slither** (Trail of Bits static analyzer) — all findings addressed
+- **Aderyn** (Cyfrin static analyzer) — all findings addressed
+- **Forge coverage** — unit, fuzz, integration, and invariant tests
 
-### Test Accounts
+## Mainnet Addresses
 
-Anvil provides pre-funded accounts (10,000 ETH each):
+| Contract | Address |
+|----------|---------|
+| WETH | `0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2` |
+| wstETH | `0x7f39C581F595B53c5cb19bD0b3f8dA6c935E2Ca0` |
+| stETH | `0xae7ab96520DE3A18E5e111B5EaAb095312D7fE84` |
+| alETH | `0x0100546F2cD4C9D97f798fFC9755E47865FF7Ee6` |
+| Balancer Vault | `0xBA12222222228d8Ba445958a75a0704d566BF2C8` |
+| Aave V3 Pool | `0x87870Bca3F3fD6335C3F4ce8392D69350B4fA4E2` |
+| Curve alETH/ETH | `0xC4C319E2D4d66CcA4464C0c2B32c9Bd23ebe784e` |
+| Curve stETH/ETH | `0xDC24316b9AE028F1497c275EB9192a3Ea0f67022` |
 
-| Account | Private Key |
-|---------|-------------|
-| 0xf39F...2266 | `0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80` |
-| 0x7099...79C8 | `0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d` |
-| 0x3C44...93BC | `0x5de4111afa1a4b94908f83103eb1f1706367c2e68ca870fc3fb9a804cdab365a` |
+## Dependencies
 
-**Warning:** Never use these keys on mainnet. They are publicly known test keys.
-
-See [Local Testing Guide](docs/local-testing.md) for complete setup instructions.
-
-## Project Structure
-
-```
-LogrisV1/
-├── src/
-│   ├── LeveragedVault.sol              # Main vault contract (ERC4626 + callbacks)
-│   ├── LeveragedVaultFactory.sol       # Factory for deploying vaults
-│   ├── ERC4626.sol                     # ERC4626 implementation
-│   ├── AlchemixV3DebtAdapter.sol       # V3 debt adapter
-│   ├── AlchemistV3LeverageCalculator.sol  # Leverage calculation engine
-│   ├── BasicAlchemistV3Integrator.sol  # Single-user V3 integration
-│   ├── SimpleDebtTokenAdapter.sol      # Simple debt token operations
-│   │
-│   ├── base/
-│   │   ├── AlchemistV3Base.sol         # Base V3 operations
-│   │   └── SlippageControl.sol         # Shared slippage controls
-│   │
-│   ├── adapters/
-│   │   ├── CurveSwapper.sol            # Curve DEX integration
-│   │   ├── CurvePoolSwapper.sol        # Pool-specific Curve swaps
-│   │   ├── WstETHAdapter.sol           # wstETH token adapter
-│   │   └── flashloan/
-│   │       ├── BalancerFlashLoanAdapter.sol
-│   │       ├── AaveV3FlashLoanAdapter.sol
-│   │       └── EulerFlashLoanAdapter.sol
-│   │
-│   ├── converters/
-│   │   └── WETHToWstETHConverter.sol   # WETH ↔ wstETH converter
-│   │
-│   ├── leveragers/
-│   │   └── V3Leverager.sol             # Modular V3 leverager
-│   │
-│   ├── config/
-│   │   ├── MainnetAddresses.sol        # Mainnet contract addresses
-│   │   └── NetworkConfig.sol           # Per-network config
-│   │
-│   ├── interfaces/                     # Contract interfaces
-│   │   ├── alchemist/                  # Alchemist V3 interfaces
-│   │   ├── balancer/                   # Balancer vault interfaces
-│   │   ├── curve/                      # Curve pool/router interfaces
-│   │   ├── euler/                      # Euler flash loan interfaces
-│   │   └── flashloan/                  # Flash loan interfaces
-│   │
-│   └── test/                           # Solidity test mocks/helpers
-│
-├── test/
-│   ├── LeveragedVaultTest.t.sol        # Main vault tests
-│   ├── LeveragedVaultFactory.t.sol     # Factory tests
-│   ├── AlchemistV3LeverageCalculator.t.sol  # Calculator tests
-│   ├── BasicAlchemistV3Integrator.t.sol     # V3 integration tests
-│   ├── AlchemistV3E2E.t.sol            # End-to-end tests
-│   ├── CurveSwapperFork.t.sol          # Curve fork tests
-│   ├── FlashLoanAdapterFork.t.sol      # Flash loan fork tests
-│   ├── IntegrationFork.t.sol           # Integration fork tests
-│   ├── EdgeCases.t.sol                 # Edge case tests
-│   ├── ERC4626.t.sol                   # ERC4626 compliance tests
-│   └── SimpleDebtTokenAdapter.t.sol    # Adapter tests
-│
-├── script/
-│   ├── DeployFork.s.sol                # Mainnet fork deployment script
-│   ├── DeployMock.s.sol                # Mock deployment script
-│   └── start-local.sh                  # Start local fork environment
-│
-├── dapp/                               # Frontend application
-├── docs/                               # Documentation
-├── lib/                                # Dependencies (forge-std, OpenZeppelin, etc.)
-└── alchemix-v3/                        # Alchemix V3 submodule
-```
-
-## Documentation
-
-| Document | Description |
-|----------|-------------|
-| [Alchemix V3 Integration](docs/alchemix-v3-integration.md) | V3 integration architecture and callback pattern |
-| [Implementation Guide](docs/implementation-guide.md) | Detailed implementation guide with code samples |
-| [Local Testing](docs/local-testing.md) | Local environment setup with Anvil fork |
-
-### Archived Documentation
-
-| Document | Description |
-|----------|-------------|
-| [Development Plan](docs/archive/DEVELOPMENT_PLAN.md) | Development roadmap and progress |
-| [Phase 2 Testing Summary](docs/archive/PHASE_2_TESTING_SUMMARY.md) | Testing results and mock architecture |
-| [WETH Parameter Changes](docs/archive/WETH_PARAMETER_CHANGES.md) | WETH parameter refactoring details |
-
-## Alchemist V3 vs V2
-
-Key architectural differences:
-
-| Feature | Alchemix V2 | Alchemix V3 |
-|---------|-------------|-------------|
-| Position model | Account-based (address) | NFT-based (ERC-721) |
-| Position ID | User address | Token ID |
-| Delegation | Custom approvals | ERC-721 standard + mint approvals |
-| LTV | Variable per adapter | Fixed 90% |
-
-See [Alchemix V3 Integration](docs/alchemix-v3-integration.md) for detailed integration guidance.
-
-## Security Considerations
-
-- **Slippage Protection**: All swaps include configurable slippage limits
-- **Access Control**: Vault callbacks restricted to authorized leverager only
-- **Bonus Caps**: Efficiency bonuses capped at 25% to prevent gaming
-- **Flash Loan Safety**: Atomic transactions with proper repayment validation
-- **Position Ownership**: Vault owns single Alchemist V3 position, users hold proportional vault shares
+- [OpenZeppelin Contracts](https://github.com/OpenZeppelin/openzeppelin-contracts) — Access control, SafeERC20, ReentrancyGuard, Pausable
+- [Alchemix V3](https://github.com/alchemix-finance) — AlchemistV3, position NFTs (submodule at `alchemix-v3/`)
+- [Forge Std](https://github.com/foundry-rs/forge-std) — Testing framework
 
 ## License
 
