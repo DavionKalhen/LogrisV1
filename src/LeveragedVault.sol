@@ -450,58 +450,19 @@ contract LeveragedVault is Ownable, ERC4626, ReentrancyGuard, Pausable, ILeverag
         uint256 mintAmount,
         uint256 debtTradeMin
     ) external override whenNotPaused noConcurrentOperation {
-        _leverageWithAdapters(
-            clampedDeposit,
-            flashLoanAmount,
-            underlyingDepositMin,
-            mintAmount,
-            debtTradeMin,
-            defaultConverter,
-            defaultFlashLoanAdapter,
-            defaultSwapper
-        );
+        _executeLeverage(clampedDeposit, flashLoanAmount, underlyingDepositMin, mintAmount, debtTradeMin);
     }
 
-    /// @notice Execute leverage with custom adapters
-    /// @dev Allows users to specify different adapters than defaults
-    function leverageWithAdapters(
+    function _executeLeverage(
         uint256 clampedDeposit,
         uint256 flashLoanAmount,
         uint256 underlyingDepositMin,
         uint256 mintAmount,
-        uint256 debtTradeMin,
-        address converter,
-        address flashLoanAdapter,
-        address swapper
-    ) external whenNotPaused noConcurrentOperation {
-        _leverageWithAdapters(
-            clampedDeposit,
-            flashLoanAmount,
-            underlyingDepositMin,
-            mintAmount,
-            debtTradeMin,
-            converter,
-            flashLoanAdapter,
-            swapper
-        );
-    }
-
-    function _leverageWithAdapters(
-        uint256 clampedDeposit,
-        uint256 flashLoanAmount,
-        uint256 underlyingDepositMin,
-        uint256 mintAmount,
-        uint256 debtTradeMin,
-        address converter,
-        address flashLoanAdapter,
-        address swapper
+        uint256 debtTradeMin
     ) internal {
         uint256 poolBalance = _underlyingToken.balanceOf(address(this));
         require(clampedDeposit <= poolBalance, "Insufficient pool balance");
         require(clampedDeposit > 0, "Must deposit something");
-        require(converter != address(0), "Converter not set");
-        require(flashLoanAdapter != address(0), "Flash loan adapter not set");
-        require(swapper != address(0), "Swapper not set");
 
         // Enforce minimum slippage protection on debt swap (sandwich attack vector)
         _enforceMinimumSlippage(mintAmount, debtTradeMin);
@@ -509,9 +470,9 @@ contract LeveragedVault is Ownable, ERC4626, ReentrancyGuard, Pausable, ILeverag
         int256 debtBefore = int256(_getVaultDebt());
 
         // Convert underlying → yield tokens using the converter
-        _underlyingToken.forceApprove(converter, clampedDeposit);
+        _underlyingToken.forceApprove(defaultConverter, clampedDeposit);
         uint256 minYieldFromDeposit = flashLoanAmount == 0 ? underlyingDepositMin : 0;
-        uint256 yieldTokensReceived = ITokenConverter(converter).toYield(
+        uint256 yieldTokensReceived = ITokenConverter(defaultConverter).toYield(
             clampedDeposit,
             address(this),
             minYieldFromDeposit
@@ -537,9 +498,9 @@ contract LeveragedVault is Ownable, ERC4626, ReentrancyGuard, Pausable, ILeverag
         // Construct V3 leverage params
         ILeveragerV3.LeverageParams memory params = ILeveragerV3.LeverageParams({
             vault: address(this),
-            converter: converter,
-            flashLoanAdapter: flashLoanAdapter,
-            swapper: swapper,
+            converter: defaultConverter,
+            flashLoanAdapter: defaultFlashLoanAdapter,
+            swapper: defaultSwapper,
             depositAmount: yieldTokensReceived,
             flashLoanAmount: flashLoanAmount,
             mintAmount: mintAmount,
@@ -569,16 +530,7 @@ contract LeveragedVault is Ownable, ERC4626, ReentrancyGuard, Pausable, ILeverag
             uint256 debtTradeMin
         ) = getLeverageParameters(depositAmount, _underlyingSlippageBasisPoints, _debtSlippageBasisPoints);
 
-        _leverageWithAdapters(
-            clampedDeposit,
-            flashLoanAmount,
-            underlyingDepositMin,
-            mintAmount,
-            debtTradeMin,
-            defaultConverter,
-            defaultFlashLoanAdapter,
-            defaultSwapper
-        );
+        _executeLeverage(clampedDeposit, flashLoanAmount, underlyingDepositMin, mintAmount, debtTradeMin);
     }
 
     // ============ Callback Functions (called by leverager) ============
@@ -646,46 +598,14 @@ contract LeveragedVault is Ownable, ERC4626, ReentrancyGuard, Pausable, ILeverag
         uint256 burnAmount,
         uint256 minUnderlyingOut
     ) external override noConcurrentOperation returns (uint256 underlyingWithdrawAmount) {
-        return _withdrawUnderlyingWithAdapters(
-            shares,
-            flashLoanAmount,
-            burnAmount,
-            minUnderlyingOut,
-            defaultConverter,
-            defaultFlashLoanAdapter,
-            defaultSwapper
-        );
+        return _executeWithdraw(shares, flashLoanAmount, burnAmount, minUnderlyingOut);
     }
 
-    /// @notice Withdraw with custom adapters
-    function withdrawUnderlyingWithAdapters(
+    function _executeWithdraw(
         uint256 shares,
         uint256 flashLoanAmount,
         uint256 burnAmount,
-        uint256 minUnderlyingOut,
-        address converter,
-        address flashLoanAdapter,
-        address swapper
-    ) external noConcurrentOperation returns (uint256 underlyingWithdrawAmount) {
-        return _withdrawUnderlyingWithAdapters(
-            shares,
-            flashLoanAmount,
-            burnAmount,
-            minUnderlyingOut,
-            converter,
-            flashLoanAdapter,
-            swapper
-        );
-    }
-
-    function _withdrawUnderlyingWithAdapters(
-        uint256 shares,
-        uint256 flashLoanAmount,
-        uint256 burnAmount,
-        uint256 minUnderlyingOut,
-        address converter,
-        address flashLoanAdapter,
-        address swapper
+        uint256 minUnderlyingOut
     ) internal returns (uint256 underlyingWithdrawAmount) {
         require(shares <= balanceOf(msg.sender), "Insufficient shares");
 
@@ -700,16 +620,15 @@ contract LeveragedVault is Ownable, ERC4626, ReentrancyGuard, Pausable, ILeverag
             // Need to withdraw from Alchemist but no debt to burn (free collateral)
             uint256 neededFromAlchemist = underlyingWithdrawAmount - poolBalance;
             require(vaultPositionId > 0, "No position to withdraw from");
-            require(converter != address(0), "Converter not set");
             _requireSinglePosition(IAlchemistV3Position(alchemist.alchemistPositionNFT()));
 
             uint256 yieldToWithdraw = alchemist.convertUnderlyingTokensToYield(neededFromAlchemist);
             uint256 withdrawn = alchemist.withdraw(yieldToWithdraw, address(this), vaultPositionId);
-            IERC20(_yieldToken).forceApprove(converter, withdrawn);
+            IERC20(_yieldToken).forceApprove(defaultConverter, withdrawn);
             uint256 minOutForConverter = minUnderlyingOut > poolBalance
                 ? minUnderlyingOut - poolBalance
                 : 0;
-            uint256 underlyingReceived = ITokenConverter(converter).toUnderlying(
+            uint256 underlyingReceived = ITokenConverter(defaultConverter).toUnderlying(
                 withdrawn,
                 address(this),
                 minOutForConverter
@@ -723,17 +642,14 @@ contract LeveragedVault is Ownable, ERC4626, ReentrancyGuard, Pausable, ILeverag
         } else {
             // Need to deleverage: flash loan → swap to debt → burn → withdraw → repay
             require(vaultPositionId > 0, "No position");
-            require(converter != address(0), "Converter not set");
-            require(flashLoanAdapter != address(0), "Flash loan adapter not set");
-            require(swapper != address(0), "Swapper not set");
             _requireSinglePosition(IAlchemistV3Position(alchemist.alchemistPositionNFT()));
 
             // Construct V3 deleverage params
             ILeveragerV3.DeleverageParams memory params = ILeveragerV3.DeleverageParams({
                 vault: address(this),
-                converter: converter,
-                flashLoanAdapter: flashLoanAdapter,
-                swapper: swapper,
+                converter: defaultConverter,
+                flashLoanAdapter: defaultFlashLoanAdapter,
+                swapper: defaultSwapper,
                 recipient: msg.sender,
                 withdrawAmount: alchemist.convertUnderlyingTokensToYield(underlyingWithdrawAmount),
                 flashLoanAmount: flashLoanAmount,
@@ -773,15 +689,7 @@ contract LeveragedVault is Ownable, ERC4626, ReentrancyGuard, Pausable, ILeverag
             uint256 minUnderlyingOut
         ) = getWithdrawUnderlyingParameters(shares, _underlyingSlippageBasisPoints, _debtSlippageBasisPoints);
 
-        return _withdrawUnderlyingWithAdapters(
-            shares,
-            flashLoanAmount,
-            burnAmount,
-            minUnderlyingOut,
-            defaultConverter,
-            defaultFlashLoanAdapter,
-            defaultSwapper
-        );
+        return _executeWithdraw(shares, flashLoanAmount, burnAmount, minUnderlyingOut);
     }
 
     // ============ Internal Helpers ============

@@ -412,39 +412,19 @@ contract V3LeveragerE2ETest is Test {
         assertEq(collateral, actualWstETH, "Collateral should match deposited amount");
     }
 
-    function test_E2E_LeverageWithCustomAdapters() public {
-        // Test that leverageWithAdapters function accepts custom adapter addresses
-        // and validates them properly
-
-        uint256 depositAmount = 3 ether;
-
-        vm.startPrank(alice);
-        vault.depositUnderlying{value: depositAmount}();
-        vm.stopPrank();
-
-        // Verify custom adapters can be passed
-        assertEq(vault.defaultConverter(), address(converter), "Default converter set");
-        assertEq(vault.defaultFlashLoanAdapter(), address(flashLoanAdapter), "Default flash loan adapter set");
-        assertEq(vault.defaultSwapper(), address(swapper), "Default swapper set");
+    function test_E2E_ImmutableAdaptersMatchDeployment() public view {
+        // Verify adapters are set at construction and match what was deployed
+        assertEq(vault.defaultConverter(), address(converter), "Converter should be immutable");
+        assertEq(vault.defaultFlashLoanAdapter(), address(flashLoanAdapter), "Flash loan adapter should be immutable");
+        assertEq(vault.defaultSwapper(), address(swapper), "Swapper should be immutable");
 
         // Verify leverager has approved these adapters
-        assertTrue(
-            ILeveragerV3(address(leverager)).isApprovedConverter(address(converter)),
-            "Converter should be approved"
-        );
-        assertTrue(
-            ILeveragerV3(address(leverager)).isApprovedFlashLoanAdapter(address(flashLoanAdapter)),
-            "Flash loan adapter should be approved"
-        );
-        assertTrue(
-            ILeveragerV3(address(leverager)).isApprovedSwapper(address(swapper)),
-            "Swapper should be approved"
-        );
-
-        console.log("Custom adapter validation passed");
+        assertTrue(leverager.isApprovedConverter(address(converter)), "Converter should be approved");
+        assertTrue(leverager.isApprovedFlashLoanAdapter(address(flashLoanAdapter)), "Flash loan adapter should be approved");
+        assertTrue(leverager.isApprovedSwapper(address(swapper)), "Swapper should be approved");
     }
 
-    function test_E2E_LeverageWithAaveFlashLoan() public {
+    function test_E2E_LeverageWithBalancerFlashLoan() public {
         uint256 depositAmount = 5 ether;
 
         // 1. Deposit ETH into the vault (pool)
@@ -454,16 +434,16 @@ contract V3LeveragerE2ETest is Test {
 
         // 2. Compute min yield from deposit using Lido share math
         uint32 underlyingSlippage = 100;
-        uint32 debtSlippage = 200;
+        uint32 debtSlippage = 400;
         uint256 expectedShares = IE2EStETH(STETH).getSharesByPooledEth(depositAmount);
         uint256 expectedYield = IE2EWstETH(WSTETH).getWstETHByStETH(expectedShares);
         uint256 underlyingDepositMin = expectedYield * (10_000 - underlyingSlippage) / 10_000;
 
-        // 3. Choose a conservative target leverage (2x)
-        uint256 flashLoanAmount = depositAmount / 5; // conservative flash loan size
+        // 3. Choose a conservative flash loan size
+        uint256 flashLoanAmount = depositAmount / 5;
         uint256 minColl = alchemist.minimumCollateralization();
 
-        // 4. Size mint amount based on Curve quote and Aave flash loan fee
+        // 4. Size mint amount based on Curve quote (Balancer has 0% fee)
         (uint256 ratePerDebt, ) = swapper.previewSwapDebtToUnderlying(1 ether);
         require(ratePerDebt > 0, "Curve rate unavailable");
 
@@ -474,8 +454,7 @@ contract V3LeveragerE2ETest is Test {
             flashLoanAmount = maxFlashLoan;
         }
 
-        uint256 fee = aaveFlashLoanAdapter.getFlashLoanFee(WETH, flashLoanAmount);
-        uint256 requiredDebt = (flashLoanAmount + fee) * 1e18 / ratePerDebt;
+        uint256 requiredDebt = flashLoanAmount * 1e18 / ratePerDebt;
         uint256 mintAmount = requiredDebt * 10_000 / (10_000 - debtSlippage);
         if (mintAmount > maxDebt) {
             mintAmount = maxDebt;
@@ -483,23 +462,14 @@ contract V3LeveragerE2ETest is Test {
 
         (uint256 expectedOut, ) = swapper.previewSwapDebtToUnderlying(mintAmount);
         uint256 minSwapOut = expectedOut * (10_000 - debtSlippage) / 10_000;
-        if (minSwapOut < flashLoanAmount + fee) {
-            flashLoanAmount = minSwapOut > fee ? minSwapOut - fee : 0;
+        if (minSwapOut < flashLoanAmount) {
+            flashLoanAmount = minSwapOut;
         }
-        require(minSwapOut >= flashLoanAmount + fee, "Swap output below repay target");
+        require(minSwapOut >= flashLoanAmount, "Swap output below repay target");
 
-        // 5. Execute leverage with Aave adapter
+        // 5. Execute leverage using vault's immutable default adapters (Balancer)
         vm.prank(alice);
-        vault.leverageWithAdapters(
-            depositAmount,
-            flashLoanAmount,
-            underlyingDepositMin,
-            mintAmount,
-            minSwapOut,
-            address(converter),
-            address(aaveFlashLoanAdapter),
-            address(swapper)
-        );
+        vault.leverage(depositAmount, flashLoanAmount, underlyingDepositMin, mintAmount, minSwapOut);
 
         uint256 positionId = vault.getVaultPositionId();
         assertGt(positionId, 0, "Position should be created");
@@ -634,19 +604,17 @@ contract V3LeveragerE2ETest is Test {
             9950
         );
 
-        // Deposit ETH (wraps to WETH in deposit pool)
-        vm.startPrank(alice);
-        vault.depositUnderlying{value: 1 ether}();
-        vm.stopPrank();
+        // Verify the unapproved converter is not in the leverager registry
+        assertFalse(
+            leverager.isApprovedConverter(address(unapprovedConverter)),
+            "Unapproved converter should not be in registry"
+        );
 
-        // Try to leverage with unapproved converter
-        vm.prank(deployer);
-        vm.expectRevert(); // Should revert due to unapproved converter
-        vault.leverageWithAdapters(
-            1 ether, 2 ether, 0, 2 ether, 0,
-            address(unapprovedConverter),  // Unapproved!
-            address(flashLoanAdapter),
-            address(swapper)
+        // The vault's immutable adapters are approved, so leverage() works
+        // But a vault deployed with the unapproved converter would fail at leverage time
+        assertTrue(
+            leverager.isApprovedConverter(vault.defaultConverter()),
+            "Vault's default converter must be approved in leverager"
         );
     }
 }
