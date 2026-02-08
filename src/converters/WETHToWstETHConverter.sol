@@ -4,6 +4,7 @@ pragma solidity 0.8.26;
 import "../interfaces/ITokenConverter.sol";
 import "lib/openzeppelin-contracts/contracts/token/ERC20/IERC20.sol";
 import "lib/openzeppelin-contracts/contracts/token/ERC20/utils/SafeERC20.sol";
+import "lib/openzeppelin-contracts/contracts/access/Ownable.sol";
 
 /// @dev Local minimal interfaces to avoid import conflicts
 interface IWETHConverter {
@@ -32,10 +33,31 @@ interface ICurvePoolConverter {
 /// @notice Converts between WETH and wstETH via Lido
 /// @dev For toYield: WETH → ETH → stETH (Lido) → wstETH
 /// @dev For toUnderlying: wstETH → stETH → ETH (Curve) → WETH
-contract WETHToWstETHConverter is ITokenConverter {
+contract WETHToWstETHConverter is ITokenConverter, Ownable {
     using SafeERC20 for IERC20;
 
-    uint256 public constant BASIS_POINTS = 10_000;
+    error ZeroAddress();
+    error InvalidMinOutBps();
+    error InsufficientYieldOutput();
+    error NoETHToRescue();
+    error ETHTransferFailed();
+
+    /// @notice Emitted when WETH is converted to wstETH.
+    /// @param wethAmount Amount of WETH consumed.
+    /// @param wstEthAmount Amount of wstETH produced.
+    /// @param recipient Address that received the wstETH.
+    event ConvertedToYield(uint256 wethAmount, uint256 wstEthAmount, address indexed recipient);
+    /// @notice Emitted when wstETH is converted to WETH.
+    /// @param wstEthAmount Amount of wstETH consumed.
+    /// @param wethAmount Amount of WETH produced.
+    /// @param recipient Address that received the WETH.
+    event ConvertedToUnderlying(uint256 wstEthAmount, uint256 wethAmount, address indexed recipient);
+    /// @notice Emitted when stuck ETH is rescued by the owner.
+    /// @param amount Amount of ETH rescued.
+    /// @param recipient Address that received the ETH.
+    event ETHRescued(uint256 amount, address indexed recipient);
+
+    uint256 private constant BASIS_POINTS = 10_000;
 
     address public immutable WETH;
     address public immutable STETH;
@@ -47,8 +69,16 @@ contract WETHToWstETHConverter is ITokenConverter {
     int128 public immutable CURVE_STETH_INDEX;
 
     // Minimum output in basis points (e.g., 9950 = 0.5% slippage)
-    uint256 public immutable minOutBps;
+    uint256 public immutable MIN_OUT_BPS;
 
+    /// @param _weth WETH contract address.
+    /// @param _steth stETH (Lido) contract address.
+    /// @param _wsteth wstETH (wrapped stETH) contract address.
+    /// @param _curvePool Curve stETH/ETH pool address for unwrapping.
+    /// @param _ethIndex Index of ETH in the Curve pool.
+    /// @param _stethIndex Index of stETH in the Curve pool.
+    /// @param _minOutBps Minimum output in basis points (1-10000).
+    /// @param _owner Owner address authorized to call rescueETH.
     constructor(
         address _weth,
         address _steth,
@@ -56,13 +86,14 @@ contract WETHToWstETHConverter is ITokenConverter {
         address _curvePool,
         int128 _ethIndex,
         int128 _stethIndex,
-        uint256 _minOutBps
-    ) {
-        require(_weth != address(0), "Invalid WETH");
-        require(_steth != address(0), "Invalid stETH");
-        require(_wsteth != address(0), "Invalid wstETH");
-        require(_curvePool != address(0), "Invalid Curve pool");
-        require(_minOutBps > 0 && _minOutBps <= BASIS_POINTS, "Invalid minOutBps");
+        uint256 _minOutBps,
+        address _owner
+    ) Ownable(_owner) {
+        if (_weth == address(0)) revert ZeroAddress();
+        if (_steth == address(0)) revert ZeroAddress();
+        if (_wsteth == address(0)) revert ZeroAddress();
+        if (_curvePool == address(0)) revert ZeroAddress();
+        if (_minOutBps == 0 || _minOutBps > BASIS_POINTS) revert InvalidMinOutBps();
 
         WETH = _weth;
         STETH = _steth;
@@ -70,7 +101,7 @@ contract WETHToWstETHConverter is ITokenConverter {
         CURVE_STETH_POOL = _curvePool;
         CURVE_ETH_INDEX = _ethIndex;
         CURVE_STETH_INDEX = _stethIndex;
-        minOutBps = _minOutBps;
+        MIN_OUT_BPS = _minOutBps;
     }
 
     /// @inheritdoc ITokenConverter
@@ -102,10 +133,12 @@ contract WETHToWstETHConverter is ITokenConverter {
         // 4. stETH → wstETH
         IERC20(STETH).forceApprove(WSTETH, stEthReceived);
         wstEthAmount = IWstETHConverter(WSTETH).wrap(stEthReceived);
-        require(wstEthAmount >= minYieldOut, "Insufficient yield output");
+        if (wstEthAmount < minYieldOut) revert InsufficientYieldOutput();
 
         // 5. Transfer to recipient
         IERC20(WSTETH).safeTransfer(recipient, wstEthAmount);
+
+        emit ConvertedToYield(amount, wstEthAmount, recipient);
     }
 
     /// @notice Convert wstETH to WETH via Curve
@@ -137,6 +170,8 @@ contract WETHToWstETHConverter is ITokenConverter {
 
         // 5. Transfer to recipient
         IERC20(WETH).safeTransfer(recipient, wethAmount);
+
+        emit ConvertedToUnderlying(amount, wethAmount, recipient);
     }
 
     /// @notice Preview WETH → wstETH conversion
@@ -155,12 +190,14 @@ contract WETHToWstETHConverter is ITokenConverter {
     }
 
     /// @notice Rescue any ETH dust stuck from failed conversion operations
-    function rescueETH(address payable recipient) external {
-        require(recipient != address(0), "Invalid recipient");
+    /// @param recipient Address to receive the rescued ETH.
+    function rescueETH(address payable recipient) external onlyOwner {
+        if (recipient == address(0)) revert ZeroAddress();
         uint256 balance = address(this).balance;
-        require(balance > 0, "No ETH to rescue");
+        if (balance == 0) revert NoETHToRescue();
         (bool success,) = recipient.call{value: balance}("");
-        require(success, "ETH transfer failed");
+        if (!success) revert ETHTransferFailed();
+        emit ETHRescued(balance, recipient);
     }
 
     /// @notice Allow contract to receive ETH

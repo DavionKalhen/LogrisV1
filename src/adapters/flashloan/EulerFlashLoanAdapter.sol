@@ -45,6 +45,8 @@ contract EulerFlashLoanAdapter is IFlashLoanAdapter, IFlashLoan, Ownable, Pausab
 
     /// @notice Error for invalid token address
     error InvalidToken();
+    error LengthMismatch();
+    error InvalidCaller();
 
     /**
      * @notice Constructor
@@ -52,7 +54,7 @@ contract EulerFlashLoanAdapter is IFlashLoanAdapter, IFlashLoan, Ownable, Pausab
      * @param _dTokenAddresses Array of corresponding DToken addresses
      */
     constructor(address[] memory _underlyingTokens, address[] memory _dTokenAddresses) Ownable(msg.sender) {
-        require(_underlyingTokens.length == _dTokenAddresses.length, "Length mismatch");
+        if (_underlyingTokens.length != _dTokenAddresses.length) revert LengthMismatch();
         for (uint256 i = 0; i < _underlyingTokens.length; i++) {
             dTokens[_underlyingTokens[i]] = _dTokenAddresses[i];
         }
@@ -106,7 +108,7 @@ contract EulerFlashLoanAdapter is IFlashLoanAdapter, IFlashLoan, Ownable, Pausab
     function onFlashLoan(bytes memory data) external override {
         // Verify caller is the expected DToken
         address expectedDToken = dTokens[_context.token];
-        require(msg.sender == expectedDToken, "Invalid caller");
+        if (msg.sender != expectedDToken) revert InvalidCaller();
 
         address token = _context.token;
         uint256 amount = _context.amount;

@@ -27,10 +27,10 @@ contract BalancerFlashLoanAdapter is IFlashLoanAdapter, IFlashLoanRecipient, Own
     using SafeERC20 for IERC20;
 
     /// @notice Balancer V2 Vault address (mainnet)
-    address public constant BALANCER_VAULT = 0xBA12222222228d8Ba445958a75a0704d566BF2C8;
+    address public constant BALANCER_V2_VAULT = 0xBA12222222228d8Ba445958a75a0704d566BF2C8;
 
     /// @notice The Balancer Vault contract
-    IVault public immutable balancerVault;
+    IVault public immutable BALANCER_VAULT;
 
     /// @notice Indicates if a flash loan is in progress
     bool private _flashLoanInProgress;
@@ -53,12 +53,17 @@ contract BalancerFlashLoanAdapter is IFlashLoanAdapter, IFlashLoanRecipient, Own
     /// @notice Error for invalid token
     error InvalidToken();
 
+    error InvalidCaller();
+    error SingleTokenOnly();
+    error TokenMismatch();
+    error AmountMismatch();
+
     /**
      * @notice Constructor
      * @param _balancerVault Optional custom vault address (uses mainnet default if zero)
      */
     constructor(address _balancerVault) Ownable(msg.sender) {
-        balancerVault = IVault(_balancerVault == address(0) ? BALANCER_VAULT : _balancerVault);
+        BALANCER_VAULT = IVault(_balancerVault == address(0) ? BALANCER_V2_VAULT : _balancerVault);
     }
 
     /// @inheritdoc IFlashLoanAdapter
@@ -92,7 +97,7 @@ contract BalancerFlashLoanAdapter is IFlashLoanAdapter, IFlashLoanRecipient, Own
 
         // Execute flash loan through Balancer Vault
         // Balancer calls receiveFlashLoan on this contract
-        balancerVault.flashLoan(
+        BALANCER_VAULT.flashLoan(
             IFlashLoanRecipient(address(this)),
             tokens,
             amounts,
@@ -118,23 +123,23 @@ contract BalancerFlashLoanAdapter is IFlashLoanAdapter, IFlashLoanRecipient, Own
         bytes memory userData
     ) external override {
         // SECURITY: Verify caller is Balancer Vault
-        require(msg.sender == address(balancerVault), "Invalid caller");
+        if (msg.sender != address(BALANCER_VAULT)) revert InvalidCaller();
 
         // SECURITY: Verify flash loan is in progress (prevents direct calls)
         if (!_flashLoanInProgress) revert ContextNotInitialized();
 
         // SECURITY: Single token validation
-        require(tokens.length == 1, "Single token only");
+        if (tokens.length != 1) revert SingleTokenOnly();
 
         // SECURITY: Validate token matches context
         address token = address(tokens[0]);
-        require(token == _context.token, "Token mismatch");
+        if (token != _context.token) revert TokenMismatch();
 
         uint256 amount = amounts[0];
         uint256 fee = feeAmounts[0];
 
         // SECURITY: Validate amount matches context
-        require(amount == _context.amount, "Amount mismatch");
+        if (amount != _context.amount) revert AmountMismatch();
 
         // Transfer tokens to the actual recipient
         IERC20(token).safeTransfer(_context.recipient, amount);
@@ -157,7 +162,7 @@ contract BalancerFlashLoanAdapter is IFlashLoanAdapter, IFlashLoanRecipient, Own
         if (balance < repayAmount) revert InsufficientRepayment();
 
         // Transfer tokens back to Balancer Vault (Balancer checks its balance after callback)
-        IERC20(token).safeTransfer(address(balancerVault), repayAmount);
+        IERC20(token).safeTransfer(address(BALANCER_VAULT), repayAmount);
 
         emit FlashLoanExecuted(token, amount, fee, _context.recipient);
     }
@@ -174,19 +179,19 @@ contract BalancerFlashLoanAdapter is IFlashLoanAdapter, IFlashLoanRecipient, Own
         if (token == address(0)) return false;
         // Balancer supports any token that has liquidity in the vault
         // Check if the vault has any balance of the token
-        return IERC20(token).balanceOf(address(balancerVault)) > 0;
+        return IERC20(token).balanceOf(address(BALANCER_VAULT)) > 0;
     }
 
     /// @inheritdoc IFlashLoanAdapter
     function maxFlashLoan(address token) external view override returns (uint256) {
         if (token == address(0)) return 0;
         // Maximum flash loan is the vault's token balance
-        return IERC20(token).balanceOf(address(balancerVault));
+        return IERC20(token).balanceOf(address(BALANCER_VAULT));
     }
 
     /// @inheritdoc IFlashLoanAdapter
     function getProvider() external view override returns (address) {
-        return address(balancerVault);
+        return address(BALANCER_VAULT);
     }
 
     // ===== ADMIN FUNCTIONS =====

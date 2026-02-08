@@ -7,6 +7,7 @@ import {IWETH} from "../../alchemix-v3/src/interfaces/IWETH.sol";
 import "../interfaces/ISwapper.sol";
 import "lib/openzeppelin-contracts/contracts/token/ERC20/IERC20.sol";
 import "lib/openzeppelin-contracts/contracts/token/ERC20/utils/SafeERC20.sol";
+import "lib/openzeppelin-contracts/contracts/access/Ownable.sol";
 
 /**
  * @title IWstETH
@@ -49,8 +50,30 @@ interface IStETH {
  *
  * Price represents: ETH value per wstETH token
  */
-contract WstETHAdapter is ITokenAdapter {
+contract WstETHAdapter is ITokenAdapter, Ownable {
     using SafeERC20 for IERC20;
+
+    error ZeroAddress();
+    error InvalidMinOutBps();
+    error UnsupportedPair();
+    error MinOutputRequired();
+    error NoETHToRescue();
+    error ETHTransferFailed();
+
+    /// @notice Emitted when WETH is wrapped to wstETH.
+    /// @param wethAmount Amount of WETH consumed.
+    /// @param wstEthAmount Amount of wstETH produced.
+    /// @param recipient Address that received the wstETH.
+    event Wrapped(uint256 wethAmount, uint256 wstEthAmount, address indexed recipient);
+    /// @notice Emitted when wstETH is unwrapped to WETH.
+    /// @param wstEthAmount Amount of wstETH consumed.
+    /// @param wethAmount Amount of WETH produced.
+    /// @param recipient Address that received the WETH.
+    event Unwrapped(uint256 wstEthAmount, uint256 wethAmount, address indexed recipient);
+    /// @notice Emitted when stuck ETH is rescued by the owner.
+    /// @param amount Amount of ETH rescued.
+    /// @param recipient Address that received the ETH.
+    event ETHRescued(uint256 amount, address indexed recipient);
 
     uint256 private constant BASIS_POINTS = 10_000;
 
@@ -64,15 +87,19 @@ contract WstETHAdapter is ITokenAdapter {
     address public constant WETH = 0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2;
 
     /// @notice Swapper used for stETH -> WETH conversion
-    ISwapper public immutable swapper;
-    uint256 public immutable minOutBps;
+    ISwapper public immutable SWAPPER;
+    /// @notice Minimum output in basis points for unwrap operations (e.g. 9950 = 0.5% max slippage)
+    uint256 public immutable MIN_OUT_BPS;
 
-    constructor(address _swapper, uint256 _minOutBps) {
-        require(_swapper != address(0), "Invalid swapper");
-        require(_minOutBps > 0 && _minOutBps <= BASIS_POINTS, "Invalid minOutBps");
-        require(ISwapper(_swapper).isSupportedPair(STETH, WETH), "Unsupported pair");
-        swapper = ISwapper(_swapper);
-        minOutBps = _minOutBps;
+    /// @param _swapper Swapper contract for stETH -> WETH conversion.
+    /// @param _minOutBps Minimum output in basis points (1-10000).
+    /// @param _owner Owner address authorized to call rescueETH.
+    constructor(address _swapper, uint256 _minOutBps, address _owner) Ownable(_owner) {
+        if (_swapper == address(0)) revert ZeroAddress();
+        if (_minOutBps == 0 || _minOutBps > BASIS_POINTS) revert InvalidMinOutBps();
+        if (!ISwapper(_swapper).isSupportedPair(STETH, WETH)) revert UnsupportedPair();
+        SWAPPER = ISwapper(_swapper);
+        MIN_OUT_BPS = _minOutBps;
     }
 
     /**
@@ -133,6 +160,8 @@ contract WstETHAdapter is ITokenAdapter {
 
         // 6. Transfer wstETH to recipient
         IERC20(WSTETH).safeTransfer(recipient, wstETHAmount);
+
+        emit Wrapped(amount, wstETHAmount, recipient);
     }
 
     /**
@@ -147,23 +176,27 @@ contract WstETHAdapter is ITokenAdapter {
 
         // 2. Unwrap wstETH to stETH
         uint256 stETHReceived = IWstETH(WSTETH).unwrap(amount);
-        IERC20(STETH).forceApprove(address(swapper), stETHReceived);
+        IERC20(STETH).forceApprove(address(SWAPPER), stETHReceived);
 
-        (uint256 expectedOut,) = swapper.previewSwapDebtToUnderlying(stETHReceived);
-        uint256 minOut = (expectedOut * minOutBps) / BASIS_POINTS;
-        require(minOut > 0, "Min output required");
+        (uint256 expectedOut,) = SWAPPER.previewSwapDebtToUnderlying(stETHReceived);
+        uint256 minOut = (expectedOut * MIN_OUT_BPS) / BASIS_POINTS;
+        if (minOut == 0) revert MinOutputRequired();
 
         // 3. Swap stETH -> WETH using configured swapper
-        wethAmount = swapper.swapDebtToUnderlying(stETHReceived, minOut, recipient, "");
+        wethAmount = SWAPPER.swapDebtToUnderlying(stETHReceived, minOut, recipient, "");
+
+        emit Unwrapped(amount, wethAmount, recipient);
     }
 
     /// @notice Rescue any ETH dust stuck from failed wrapping operations
-    function rescueETH(address payable recipient) external {
-        require(recipient != address(0), "Invalid recipient");
+    /// @param recipient Address to receive the rescued ETH.
+    function rescueETH(address payable recipient) external onlyOwner {
+        if (recipient == address(0)) revert ZeroAddress();
         uint256 balance = address(this).balance;
-        require(balance > 0, "No ETH to rescue");
+        if (balance == 0) revert NoETHToRescue();
         (bool success,) = recipient.call{value: balance}("");
-        require(success, "ETH transfer failed");
+        if (!success) revert ETHTransferFailed();
+        emit ETHRescued(balance, recipient);
     }
 
     // Allow contract to receive ETH from WETH.withdraw()

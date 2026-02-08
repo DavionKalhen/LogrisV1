@@ -19,22 +19,36 @@ contract CurveSwapper is ISwapper, Ownable {
     // Constants
     uint256 public constant BASIS_POINTS = 10_000;
     uint256 public constant PRECISION = 1e18;
+    /// @dev Divisor to convert Curve's 1e10-precision fee to basis points (1e4).
+    uint256 private constant CURVE_FEE_TO_BPS = 1e6;
 
     // Curve pool configuration
-    address public immutable curvePool;
-    address public immutable debtToken; // alETH
-    address public immutable underlyingToken; // WETH
-    address public immutable weth;
-    bool public immutable usesEth;
+    address public immutable CURVE_POOL;
+    address public immutable DEBT_TOKEN; // alETH
+    address public immutable UNDERLYING_TOKEN; // WETH
+    address public immutable WETH;
+    bool public immutable USES_ETH;
 
     // Pool indices (for alETH/ETH pool: 0=ETH, 1=alETH)
-    int128 public immutable ethIndex;
-    int128 public immutable alEthIndex;
+    int128 public immutable ETH_INDEX;
+    int128 public immutable AL_ETH_INDEX;
 
     // Events
-    event PoolConfigured(address pool, address debtToken, address underlyingToken);
+    /// @notice Emitted when the Curve pool is configured at deployment.
+    /// @param pool The Curve pool address.
+    /// @param debtToken The debt token address (alETH).
+    /// @param underlyingToken The underlying token address (WETH).
+    event PoolConfigured(address indexed pool, address indexed debtToken, address indexed underlyingToken);
+    /// @notice Emitted when the owner executes an emergency withdrawal.
+    /// @param token The token address withdrawn (address(0) for native ETH).
+    /// @param amount The amount withdrawn.
+    /// @param recipient The address that received the tokens.
+    event EmergencyWithdrawal(address indexed token, uint256 amount, address indexed recipient);
 
     // Errors
+    error ZeroAddress();
+    error UnderlyingMustBeWETH();
+    error MinOutputRequired();
     error ETHTransferFailed();
 
     /**
@@ -58,21 +72,21 @@ contract CurveSwapper is ISwapper, Ownable {
         bool _usesEth,
         address _owner
     ) Ownable(_owner) {
-        require(_curvePool != address(0), "Invalid pool");
-        require(_debtToken != address(0), "Invalid debt token");
-        require(_underlyingToken != address(0), "Invalid underlying token");
-        require(_weth != address(0), "Invalid WETH");
+        if (_curvePool == address(0)) revert ZeroAddress();
+        if (_debtToken == address(0)) revert ZeroAddress();
+        if (_underlyingToken == address(0)) revert ZeroAddress();
+        if (_weth == address(0)) revert ZeroAddress();
         if (_usesEth) {
-            require(_underlyingToken == _weth, "Underlying must be WETH");
+            if (_underlyingToken != _weth) revert UnderlyingMustBeWETH();
         }
 
-        curvePool = _curvePool;
-        debtToken = _debtToken;
-        underlyingToken = _underlyingToken;
-        ethIndex = _ethIndex;
-        alEthIndex = _alEthIndex;
-        weth = _weth;
-        usesEth = _usesEth;
+        CURVE_POOL = _curvePool;
+        DEBT_TOKEN = _debtToken;
+        UNDERLYING_TOKEN = _underlyingToken;
+        ETH_INDEX = _ethIndex;
+        AL_ETH_INDEX = _alEthIndex;
+        WETH = _weth;
+        USES_ETH = _usesEth;
 
         emit PoolConfigured(_curvePool, _debtToken, _underlyingToken);
     }
@@ -88,42 +102,42 @@ contract CurveSwapper is ISwapper, Ownable {
         bytes calldata /* swapData */
     ) external override returns (uint256 underlyingReceived) {
         if (debtAmount == 0) revert InvalidAmount();
-        require(minUnderlyingOut > 0, "Min output required");
+        if (minUnderlyingOut == 0) revert MinOutputRequired();
         if (recipient == address(0)) recipient = msg.sender;
 
         // Transfer alETH from sender
-        IERC20(debtToken).safeTransferFrom(msg.sender, address(this), debtAmount);
+        IERC20(DEBT_TOKEN).safeTransferFrom(msg.sender, address(this), debtAmount);
 
         // Approve pool to spend alETH
-        IERC20(debtToken).forceApprove(curvePool, debtAmount);
+        IERC20(DEBT_TOKEN).forceApprove(CURVE_POOL, debtAmount);
 
-        if (usesEth) {
+        if (USES_ETH) {
             // Execute swap: alETH -> ETH
-            uint256 ethReceived = ICurvePoolETH(curvePool).exchange(
-                alEthIndex,
-                ethIndex,
+            uint256 ethReceived = ICurvePoolETH(CURVE_POOL).exchange(
+                AL_ETH_INDEX,
+                ETH_INDEX,
                 debtAmount,
                 minUnderlyingOut
             );
 
             // Wrap ETH -> WETH
-            IWETH(weth).deposit{value: ethReceived}();
+            IWETH(WETH).deposit{value: ethReceived}();
 
             // Transfer WETH to recipient
-            IERC20(underlyingToken).safeTransfer(recipient, ethReceived);
+            IERC20(UNDERLYING_TOKEN).safeTransfer(recipient, ethReceived);
 
             underlyingReceived = ethReceived;
         } else {
-            underlyingReceived = ICurvePool(curvePool).exchange(
-                alEthIndex,
-                ethIndex,
+            underlyingReceived = ICurvePool(CURVE_POOL).exchange(
+                AL_ETH_INDEX,
+                ETH_INDEX,
                 debtAmount,
                 minUnderlyingOut
             );
-            IERC20(underlyingToken).safeTransfer(recipient, underlyingReceived);
+            IERC20(UNDERLYING_TOKEN).safeTransfer(recipient, underlyingReceived);
         }
 
-        emit SwapExecuted(debtToken, underlyingToken, debtAmount, underlyingReceived, recipient);
+        emit SwapExecuted(DEBT_TOKEN, UNDERLYING_TOKEN, debtAmount, underlyingReceived, recipient);
 
         return underlyingReceived;
     }
@@ -139,37 +153,37 @@ contract CurveSwapper is ISwapper, Ownable {
         bytes calldata /* swapData */
     ) external override returns (uint256 debtReceived) {
         if (underlyingAmount == 0) revert InvalidAmount();
-        require(minDebtOut > 0, "Min output required");
+        if (minDebtOut == 0) revert MinOutputRequired();
         if (recipient == address(0)) recipient = msg.sender;
 
         // Transfer WETH from sender
-        IERC20(underlyingToken).safeTransferFrom(msg.sender, address(this), underlyingAmount);
+        IERC20(UNDERLYING_TOKEN).safeTransferFrom(msg.sender, address(this), underlyingAmount);
 
-        if (usesEth) {
+        if (USES_ETH) {
             // Unwrap WETH -> ETH
-            IWETH(weth).withdraw(underlyingAmount);
+            IWETH(WETH).withdraw(underlyingAmount);
 
             // Execute swap: ETH -> alETH
-            debtReceived = ICurvePoolETH(curvePool).exchange{value: underlyingAmount}(
-                ethIndex,
-                alEthIndex,
+            debtReceived = ICurvePoolETH(CURVE_POOL).exchange{value: underlyingAmount}(
+                ETH_INDEX,
+                AL_ETH_INDEX,
                 underlyingAmount,
                 minDebtOut
             );
         } else {
-            IERC20(underlyingToken).forceApprove(curvePool, underlyingAmount);
-            debtReceived = ICurvePool(curvePool).exchange(
-                ethIndex,
-                alEthIndex,
+            IERC20(UNDERLYING_TOKEN).forceApprove(CURVE_POOL, underlyingAmount);
+            debtReceived = ICurvePool(CURVE_POOL).exchange(
+                ETH_INDEX,
+                AL_ETH_INDEX,
                 underlyingAmount,
                 minDebtOut
             );
         }
 
         // Transfer alETH to recipient
-        IERC20(debtToken).safeTransfer(recipient, debtReceived);
+        IERC20(DEBT_TOKEN).safeTransfer(recipient, debtReceived);
 
-        emit SwapExecuted(underlyingToken, debtToken, underlyingAmount, debtReceived, recipient);
+        emit SwapExecuted(UNDERLYING_TOKEN, DEBT_TOKEN, underlyingAmount, debtReceived, recipient);
 
         return debtReceived;
     }
@@ -185,7 +199,7 @@ contract CurveSwapper is ISwapper, Ownable {
     {
         if (debtAmount == 0) return (0, 0);
 
-        expectedUnderlying = ICurvePool(curvePool).get_dy(alEthIndex, ethIndex, debtAmount);
+        expectedUnderlying = ICurvePool(CURVE_POOL).get_dy(AL_ETH_INDEX, ETH_INDEX, debtAmount);
         minimumOutput = 0;
     }
 
@@ -200,7 +214,7 @@ contract CurveSwapper is ISwapper, Ownable {
     {
         if (underlyingAmount == 0) return (0, 0);
 
-        expectedDebt = ICurvePool(curvePool).get_dy(ethIndex, alEthIndex, underlyingAmount);
+        expectedDebt = ICurvePool(CURVE_POOL).get_dy(ETH_INDEX, AL_ETH_INDEX, underlyingAmount);
         minimumOutput = 0;
     }
 
@@ -209,7 +223,7 @@ contract CurveSwapper is ISwapper, Ownable {
      */
     function getDebtToUnderlyingRate() external view override returns (uint256 rate) {
         // Get rate for 1 alETH -> ETH
-        uint256 output = ICurvePool(curvePool).get_dy(alEthIndex, ethIndex, PRECISION);
+        uint256 output = ICurvePool(CURVE_POOL).get_dy(AL_ETH_INDEX, ETH_INDEX, PRECISION);
         return output;
     }
 
@@ -218,7 +232,7 @@ contract CurveSwapper is ISwapper, Ownable {
      */
     function getUnderlyingToDebtRate() external view override returns (uint256 rate) {
         // Get rate for 1 ETH -> alETH
-        uint256 output = ICurvePool(curvePool).get_dy(ethIndex, alEthIndex, PRECISION);
+        uint256 output = ICurvePool(CURVE_POOL).get_dy(ETH_INDEX, AL_ETH_INDEX, PRECISION);
         return output;
     }
 
@@ -227,9 +241,9 @@ contract CurveSwapper is ISwapper, Ownable {
      * @dev Curve fees are in 1e10 precision (e.g., 4000000 = 0.04%)
      */
     function getSwapFee() external view override returns (uint256 fee) {
-        uint256 poolFee = ICurvePool(curvePool).fee();
+        uint256 poolFee = ICurvePool(CURVE_POOL).fee();
         // Convert from 1e10 to basis points (1e4)
-        return poolFee / 1e6;
+        return poolFee / CURVE_FEE_TO_BPS;
     }
 
     /**
@@ -243,8 +257,8 @@ contract CurveSwapper is ISwapper, Ownable {
      * @notice Check if a token pair is supported
      */
     function isSupportedPair(address tokenA, address tokenB) external view override returns (bool supported) {
-        return (tokenA == debtToken && tokenB == underlyingToken) ||
-            (tokenA == underlyingToken && tokenB == debtToken);
+        return (tokenA == DEBT_TOKEN && tokenB == UNDERLYING_TOKEN) ||
+            (tokenA == UNDERLYING_TOKEN && tokenB == DEBT_TOKEN);
     }
 
     // ===== ADMIN FUNCTIONS =====
@@ -259,6 +273,7 @@ contract CurveSwapper is ISwapper, Ownable {
         } else {
             IERC20(token).safeTransfer(owner(), amount);
         }
+        emit EmergencyWithdrawal(token, amount, owner());
     }
 
     /**
