@@ -21,4 +21,7 @@ out/
 dapp/src/contracts.json
 
 # Local development
-/tmp/anvil.logalchemix-v3/
+/tmp/anvil.log
+
+# Reference-only dependency (not shipped)
+alchemix-v3/
