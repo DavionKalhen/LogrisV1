@@ -3,6 +3,7 @@ pragma solidity 0.8.26;
 
 import "forge-std/Test.sol";
 import "../src/LeveragedVault.sol";
+import "lib/openzeppelin-contracts/contracts/proxy/Clones.sol";
 
 contract MockERC20Pause {
     string public name;
@@ -56,9 +57,9 @@ contract LeveragedVaultPauseTest is Test {
         underlying = new MockERC20Pause("Underlying", "UND", 18);
         yieldToken = new MockERC20Pause("Yield", "YLD", 18);
 
-        vault = new LeveragedVault(
-            "Leveraged Vault",
-            "LVLT",
+        LeveragedVault impl = new LeveragedVault();
+        vault = LeveragedVault(payable(Clones.clone(address(impl))));
+        vault.initialize(
             address(yieldToken),
             address(underlying),
             address(0x1234),
@@ -68,7 +69,8 @@ contract LeveragedVaultPauseTest is Test {
             address(0xCAFE),
             address(0xF00D),
             address(0x1234),
-            address(0x5678)
+            address(0x5678),
+            address(this)
         );
     }
 
@@ -116,12 +118,34 @@ contract LeveragedVaultPauseTest is Test {
         vault.depositUnderlying(1 ether);
         vm.stopPrank();
 
-        assertEq(vault.balanceOf(user), 1 ether);
+        assertEq(vault.balanceOf(user), 1_000 ether);
     }
 
     function testOnlyOwnerCanPause() public {
         vm.prank(user);
         vm.expectRevert();
         vault.pause();
+    }
+
+    // ============ emergencySweepToken Guard Tests ============
+
+    function testEmergencySweepBlocksUnderlying() public {
+        underlying.mint(address(vault), 1 ether);
+        vm.expectRevert(LeveragedVault.CannotSweepVaultToken.selector);
+        vault.emergencySweepToken(address(underlying), 1 ether, address(this));
+    }
+
+    function testEmergencySweepBlocksYieldToken() public {
+        yieldToken.mint(address(vault), 1 ether);
+        vm.expectRevert(LeveragedVault.CannotSweepVaultToken.selector);
+        vault.emergencySweepToken(address(yieldToken), 1 ether, address(this));
+    }
+
+    function testEmergencySweepAllowsUnrelatedToken() public {
+        MockERC20Pause unrelated = new MockERC20Pause("Unrelated", "UNR", 18);
+        unrelated.mint(address(vault), 1 ether);
+        vault.emergencySweepToken(address(unrelated), 1 ether, address(this));
+        assertEq(unrelated.balanceOf(address(this)), 1 ether);
+        assertEq(unrelated.balanceOf(address(vault)), 0);
     }
 }

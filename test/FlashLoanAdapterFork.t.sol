@@ -66,13 +66,11 @@ contract FlashLoanAdapterForkTest is Test {
     function testBalancerAdapter_MaxFlashLoan_WETH() public view {
         uint256 maxLoan = balancerAdapter.maxFlashLoan(WETH);
         assertGt(maxLoan, 0, "Max flash loan for WETH should be > 0");
-        console.log("Balancer max WETH flash loan:", maxLoan / 1e18, "WETH");
     }
 
     function testBalancerAdapter_MaxFlashLoan_USDC() public view {
         uint256 maxLoan = balancerAdapter.maxFlashLoan(USDC);
         assertGt(maxLoan, 0, "Max flash loan for USDC should be > 0");
-        console.log("Balancer max USDC flash loan:", maxLoan / 1e6, "USDC");
     }
 
     function testBalancerAdapter_GetFlashLoanFee() public view {
@@ -178,7 +176,6 @@ contract FlashLoanAdapterForkTest is Test {
         );
 
         assertTrue(recipient.callbackExecuted(), "Large flash loan should succeed");
-        console.log("Successfully borrowed:", loanAmount / 1e18, "WETH");
     }
 
     function testBalancerAdapter_RevertOnInsufficientRepayment() public {
@@ -241,15 +238,13 @@ contract FlashLoanAdapterForkTest is Test {
     // ============ BALANCER LIQUIDITY INFO TESTS ============
 
     function testBalancerAdapter_ReportLiquidity() public view {
-        console.log("=== Balancer Vault Liquidity Report ===");
-
         uint256 wethLiquidity = balancerAdapter.maxFlashLoan(WETH);
         uint256 usdcLiquidity = balancerAdapter.maxFlashLoan(USDC);
         uint256 wstethLiquidity = balancerAdapter.maxFlashLoan(WSTETH);
 
-        console.log("WETH available:", wethLiquidity / 1e18);
-        console.log("USDC available:", usdcLiquidity / 1e6);
-        console.log("wstETH available:", wstethLiquidity / 1e18);
+        assertGt(wethLiquidity, 0);
+        assertGt(usdcLiquidity, 0);
+        assertGt(wstethLiquidity, 0);
     }
 }
 
@@ -376,10 +371,6 @@ contract EulerFlashLoanAdapterForkTest is Test {
         uint256 maxWeth = eulerAdapter.maxFlashLoan(WETH);
         uint256 maxUsdc = eulerAdapter.maxFlashLoan(USDC);
 
-        console.log("=== Euler dToken Liquidity Report ===");
-        console.log("WETH available:", maxWeth / 1e18);
-        console.log("USDC available:", maxUsdc / 1e6);
-
         // Note: Euler may have limited liquidity post-exploit
         // We just verify the call doesn't revert
     }
@@ -389,7 +380,6 @@ contract EulerFlashLoanAdapterForkTest is Test {
 
         // Skip if no liquidity available
         if (maxLoan == 0) {
-            console.log("Skipping Euler WETH test - no liquidity available");
             return;
         }
 
@@ -410,9 +400,8 @@ contract EulerFlashLoanAdapterForkTest is Test {
             ""
         ) {
             assertTrue(recipient.callbackExecuted(), "Callback should have been executed");
-            console.log("Euler WETH flash loan successful:", loanAmount / 1e18, "WETH");
         } catch {
-            console.log("Euler WETH flash loan failed - protocol may be in limited state");
+            // Euler protocol may be in limited state post-exploit
         }
     }
 
@@ -480,26 +469,16 @@ contract FlashLoanAdapterComparisonTest is Test {
         uint256 balancerMax = balancerAdapter.maxFlashLoan(WETH);
         uint256 eulerMax = eulerAdapter.maxFlashLoan(WETH);
 
-        console.log("=== WETH Flash Loan Capacity ===");
-        console.log("Balancer:", balancerMax / 1e18, "WETH");
-        console.log("Euler:", eulerMax / 1e18, "WETH");
-
-        if (balancerMax > eulerMax) {
-            console.log("Balancer has more WETH liquidity");
-        } else if (eulerMax > balancerMax) {
-            console.log("Euler has more WETH liquidity");
-        } else {
-            console.log("Equal WETH liquidity");
-        }
+        // Both adapters should return non-reverting values
+        assertTrue(balancerMax > 0 || eulerMax > 0, "At least one adapter should have liquidity");
     }
 
     function testCompare_MaxFlashLoan_USDC() public view {
         uint256 balancerMax = balancerAdapter.maxFlashLoan(USDC);
         uint256 eulerMax = eulerAdapter.maxFlashLoan(USDC);
 
-        console.log("=== USDC Flash Loan Capacity ===");
-        console.log("Balancer:", balancerMax / 1e6, "USDC");
-        console.log("Euler:", eulerMax / 1e6, "USDC");
+        // Both adapters should return non-reverting values
+        assertTrue(balancerMax > 0 || eulerMax > 0, "At least one adapter should have USDC liquidity");
     }
 
     function testCompare_Fees() public view {
@@ -508,8 +487,8 @@ contract FlashLoanAdapterComparisonTest is Test {
         uint256 balancerFee = balancerAdapter.getFlashLoanFee(WETH, amount);
         uint256 eulerFee = eulerAdapter.getFlashLoanFee(WETH, amount);
 
-        console.log("=== Flash Loan Fees for 1000 WETH ===");
-        console.log("Balancer fee:", balancerFee / 1e18, "WETH");
-        console.log("Euler fee:", eulerFee / 1e18, "WETH");
+        // Both Balancer and Euler have 0% flash loan fees
+        assertEq(balancerFee, 0, "Balancer fee should be 0");
+        assertEq(eulerFee, 0, "Euler fee should be 0");
     }
 }

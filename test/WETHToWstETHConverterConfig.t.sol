@@ -18,17 +18,18 @@ contract WETHToWstETHConverterConfigTest is Test {
             curvePool,
             0,
             1,
-            9950
+            9950,
+            address(this)
         );
 
         assertEq(converter.underlyingToken(), weth);
         assertEq(converter.yieldToken(), wsteth);
         assertEq(converter.CURVE_STETH_POOL(), curvePool);
-        assertEq(converter.minOutBps(), 9950);
+        assertEq(converter.MIN_OUT_BPS(), 9950);
     }
 
     function testConstructorRejectsInvalidMinOutBps() public {
-        vm.expectRevert("Invalid minOutBps");
+        vm.expectRevert(WETHToWstETHConverter.InvalidMinOutBps.selector);
         new WETHToWstETHConverter(
             address(0x1111),
             address(0x2222),
@@ -36,12 +37,13 @@ contract WETHToWstETHConverterConfigTest is Test {
             address(0x4444),
             0,
             1,
-            0
+            0,
+            address(this)
         );
     }
 
     function testConstructorRejectsHighMinOutBps() public {
-        vm.expectRevert("Invalid minOutBps");
+        vm.expectRevert(WETHToWstETHConverter.InvalidMinOutBps.selector);
         new WETHToWstETHConverter(
             address(0x1111),
             address(0x2222),
@@ -49,12 +51,13 @@ contract WETHToWstETHConverterConfigTest is Test {
             address(0x4444),
             0,
             1,
-            10001
+            10001,
+            address(this)
         );
     }
 
     function testConstructorRejectsZeroWeth() public {
-        vm.expectRevert("Invalid WETH");
+        vm.expectRevert(WETHToWstETHConverter.ZeroAddress.selector);
         new WETHToWstETHConverter(
             address(0),
             address(0x2222),
@@ -62,12 +65,13 @@ contract WETHToWstETHConverterConfigTest is Test {
             address(0x4444),
             0,
             1,
-            9950
+            9950,
+            address(this)
         );
     }
 
     function testConstructorRejectsZeroCurvePool() public {
-        vm.expectRevert("Invalid Curve pool");
+        vm.expectRevert(WETHToWstETHConverter.ZeroAddress.selector);
         new WETHToWstETHConverter(
             address(0x1111),
             address(0x2222),
@@ -75,7 +79,8 @@ contract WETHToWstETHConverterConfigTest is Test {
             address(0),
             0,
             1,
-            9950
+            9950,
+            address(this)
         );
     }
 }

@@ -658,7 +658,6 @@ contract IntegrationForkTest is Test {
     function test_BalancerFlashLoanWorks() public {
         // Verify flash loan adapter can borrow from Balancer
         uint256 maxFlashLoan = flashLoanAdapter.maxFlashLoan(WETH);
-        console.log("Max flash loan WETH:", maxFlashLoan / 1e18);
         assertTrue(maxFlashLoan > 1000 ether, "Should have significant WETH liquidity");
     }
 
@@ -681,11 +680,6 @@ contract IntegrationForkTest is Test {
         uint256 flashLoanAmount = 10 ether;
         uint256 mintAmount = 10.1 ether; // Slightly more to cover swap fees
 
-        console.log("=== Full Leverage Cycle Test ===");
-        console.log("Initial deposit:", initialDeposit / 1e18, "WETH");
-        console.log("Flash loan amount:", flashLoanAmount / 1e18, "WETH");
-        console.log("Mint amount:", mintAmount / 1e18, "debt tokens");
-
         // Fund alice and approve
         vm.startPrank(alice);
         IERC20(WETH).approve(address(leverager), initialDeposit);
@@ -700,15 +694,12 @@ contract IntegrationForkTest is Test {
 
         // Check position state
         (uint256 collateral, uint256 debt,) = alchemist.getCDP(positionId);
-        console.log("Final collateral:", collateral / 1e18);
-        console.log("Final debt:", debt / 1e18);
 
         assertEq(collateral, initialDeposit + flashLoanAmount, "Collateral should equal total deposit");
         assertEq(debt, mintAmount, "Debt should equal mint amount");
 
         // Verify health
         uint256 collateralRatio = (collateral * 100) / debt;
-        console.log("Collateralization ratio:", collateralRatio, "%");
         assertTrue(collateralRatio >= 111, "Should be properly collateralized");
     }
 
@@ -719,8 +710,6 @@ contract IntegrationForkTest is Test {
         // Need to mint enough to cover flash loan after 0.5% swap fee
         // 200 / 0.995 = 201.005, use 202 to be safe
         uint256 mintAmount = 202 ether;
-
-        console.log("=== Large Leverage Test ===");
 
         // Fund alice with more WETH
         vm.deal(alice, 200 ether);
@@ -734,9 +723,6 @@ contract IntegrationForkTest is Test {
 
         uint256 positionId = vault.getVaultPositionId();
         (uint256 collateral, uint256 debt,) = alchemist.getCDP(positionId);
-
-        console.log("Collateral:", collateral / 1e18, "WETH");
-        console.log("Debt:", debt / 1e18, "debt tokens");
 
         assertEq(collateral, initialDeposit + flashLoanAmount);
         assertEq(debt, mintAmount);
@@ -793,10 +779,6 @@ contract IntegrationForkTest is Test {
         assertEq(bobCol, 25 ether);
         assertEq(bobDebt, 15.1 ether);
 
-        console.log("Alice collateral:", aliceCol / 1e18);
-        console.log("Alice debt:", aliceDebt / 1e18);
-        console.log("Bob collateral:", bobCol / 1e18);
-        console.log("Bob debt:", bobDebt / 1e18);
     }
 
     // ============ Gas Measurement Tests ============
@@ -810,8 +792,6 @@ contract IntegrationForkTest is Test {
         uint256 gasUsed = gasBefore - gasleft();
 
         vm.stopPrank();
-
-        console.log("Gas used for leverage:", gasUsed);
 
         // Should be reasonable gas consumption
         assertTrue(gasUsed < 1_500_000, "Gas should be under 1.5M");

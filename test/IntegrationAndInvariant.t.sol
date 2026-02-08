@@ -4,6 +4,7 @@ pragma solidity 0.8.26;
 import "forge-std/Test.sol";
 import "lib/openzeppelin-contracts/contracts/token/ERC20/ERC20.sol";
 import "lib/openzeppelin-contracts/contracts/token/ERC20/utils/SafeERC20.sol";
+import "lib/openzeppelin-contracts/contracts/proxy/Clones.sol";
 import "../src/LeveragedVault.sol";
 import "../src/leveragers/V3Leverager.sol";
 import "../src/interfaces/ILeveragerV3.sol";
@@ -107,6 +108,7 @@ contract IntMockAlchemistV3 {
     function convertYieldTokensToUnderlying(uint256 amount) external pure returns (uint256) { return amount; }
     function convertUnderlyingTokensToYield(uint256 amount) external pure returns (uint256) { return amount; }
     function normalizeDebtTokensToUnderlying(uint256 amount) external pure returns (uint256) { return amount; }
+    function normalizeUnderlyingTokensToDebt(uint256 amount) external pure returns (uint256) { return amount; }
 
     function getMaxBorrowable(uint256 posId) external view returns (uint256) {
         uint256 maxDebt = posCollateral[posId] * 1e18 / minCollateralizationVal;
@@ -236,6 +238,31 @@ contract IntMockFlashLoan is IFlashLoanAdapter {
     function getProvider() external view override returns (address) { return address(this); }
 }
 
+// ============ Helper: deploy impl + clone + initialize ============
+
+function _deployVaultClone(
+    address _yieldToken,
+    address _underlyingAndWeth,
+    address _alchemist,
+    address _leverager,
+    address _converter,
+    address _flashLoan,
+    address _swapper,
+    address _owner
+) returns (LeveragedVault) {
+    LeveragedVault impl = new LeveragedVault();
+    LeveragedVault vault = LeveragedVault(payable(Clones.clone(address(impl))));
+    vault.initialize(
+        _yieldToken, _underlyingAndWeth,
+        _alchemist, _leverager,
+        100, 200,
+        _converter, _flashLoan, _swapper,
+        _underlyingAndWeth,
+        _owner
+    );
+    return vault;
+}
+
 // ============ Integration Test ============
 
 contract FullIntegrationTest is Test {
@@ -268,13 +295,11 @@ contract FullIntegrationTest is Test {
         leverager.setFlashLoanAdapterApproval(address(flashLoanAdapter), true);
         leverager.setSwapperApproval(address(swapper), true);
 
-        vault = new LeveragedVault(
-            "Leveraged Vault", "LVLT",
+        vault = _deployVaultClone(
             address(yieldToken), address(weth),
             address(alchemist), address(leverager),
-            100, 200, // 1% underlying, 2% debt slippage defaults
             address(converter), address(flashLoanAdapter), address(swapper),
-            address(weth)
+            owner
         );
         vm.stopPrank();
 
@@ -291,7 +316,7 @@ contract FullIntegrationTest is Test {
         // 1. Alice deposits ETH
         vm.prank(alice);
         uint256 shares = vault.depositUnderlying{value: depositAmount}();
-        assertEq(shares, depositAmount, "Should get 1:1 shares on first deposit");
+        assertEq(shares, depositAmount * 1000, "Should get 1000:1 shares on first deposit (offset=3)");
         assertEq(vault.getDepositPoolBalance(), depositAmount, "Pool should hold deposit");
 
         // 2. Leverage the deposit (no flash loan for simplicity, just deposit to Alchemist)
@@ -325,13 +350,9 @@ contract FullIntegrationTest is Test {
         vm.stopPrank();
 
         // 2. Leverage with flash loan
-        // Mock swapper returns 99% of debt as underlying, so:
-        //   swapOutput = mintAmount * 0.99 must be >= flashLoanAmount
-        //   e.g. flashLoan=2, mint=3: output=2.97 >= 2 ✓
         uint256 flashLoanAmount = 2 ether;
         uint256 totalDeposit = depositAmount + flashLoanAmount;
         uint256 mintAmount = 3 ether;
-        // Must satisfy vault's minimum slippage (1% underlying, 2% debt)
         uint256 underlyingDepositMin = totalDeposit * 9900 / 10000;
         uint256 debtTradeMin = mintAmount * 9800 / 10000;
 
@@ -363,9 +384,9 @@ contract FullIntegrationTest is Test {
         vm.prank(bob);
         uint256 bobShares = vault.depositUnderlying{value: 5 ether}();
 
-        assertEq(aliceShares, 10 ether);
-        assertEq(bobShares, 5 ether);
-        assertEq(vault.totalSupply(), 15 ether);
+        assertEq(aliceShares, 10_000 ether);
+        assertEq(bobShares, 5_000 ether);
+        assertEq(vault.totalSupply(), 15_000 ether);
 
         // 3. Leverage entire pool (no flash loan)
         vm.prank(alice);
@@ -375,7 +396,6 @@ contract FullIntegrationTest is Test {
         uint256 aliceValue = vault.convertSharesToUnderlyingTokens(aliceShares);
         uint256 bobValue = vault.convertSharesToUnderlyingTokens(bobShares);
 
-        // Alice has 2/3 of shares, Bob has 1/3
         assertApproxEqAbs(aliceValue, 10 ether, 1, "Alice should have ~10 ETH value");
         assertApproxEqAbs(bobValue, 5 ether, 1, "Bob should have ~5 ETH value");
     }
@@ -391,7 +411,6 @@ contract FullIntegrationTest is Test {
         vault.depositUnderlying(depositAmount);
         vm.stopPrank();
 
-        // leverageAtomic computes parameters internally using vault's stored slippage
         vm.prank(alice);
         vault.leverageAtomic(depositAmount, 100, 200);
 
@@ -405,14 +424,12 @@ contract FullIntegrationTest is Test {
     function test_WithdrawUnderlyingAtomic_Works() public {
         uint256 depositAmount = 10 ether;
 
-        // Deposit and put in pool only (no leverage)
         weth.mint(alice, depositAmount);
         vm.startPrank(alice);
         weth.approve(address(vault), depositAmount);
         uint256 shares = vault.depositUnderlying(depositAmount);
         vm.stopPrank();
 
-        // withdrawUnderlyingAtomic should work for pool-only withdrawals
         vm.prank(alice);
         uint256 withdrawn = vault.withdrawUnderlyingAtomic(shares, 100, 200);
 
@@ -434,9 +451,8 @@ contract FullIntegrationTest is Test {
         uint256 flashLoanAmount = 2 ether;
         uint256 totalDeposit = depositAmount + flashLoanAmount;
 
-        // debtTradeMin = 0 should be rejected (vault enforces 2x debt slippage as floor)
         vm.prank(alice);
-        vm.expectRevert("Swap slippage below vault minimum");
+        vm.expectRevert(LeveragedVault.SwapSlippageBelowMinimum.selector);
         vault.leverage(depositAmount, flashLoanAmount, totalDeposit, 3 ether, 0);
     }
 
@@ -452,13 +468,9 @@ contract FullIntegrationTest is Test {
         uint256 flashLoanAmount = 2 ether;
         uint256 totalDeposit = depositAmount + flashLoanAmount;
         uint256 mintAmount = 3 ether;
-        // vault debtSlippage=200bps, enforcement floor=400bps (2x)
-        // minAcceptable = 3e18 * 9600/10000 = 2.88e18
-        uint256 validDebtTradeMin = mintAmount * 9600 / 10000;
-        uint256 validDepositMin = totalDeposit; // valid deposit min
+        uint256 validDebtTradeMin = mintAmount * 9800 / 10000;
+        uint256 validDepositMin = totalDeposit;
 
-        // Deposit-side slippage is not enforced (Lido conversion not manipulable)
-        // Only debt swap side is checked
         vm.prank(alice);
         vault.leverage(depositAmount, flashLoanAmount, validDepositMin, mintAmount, validDebtTradeMin);
 
@@ -474,13 +486,10 @@ contract FullIntegrationTest is Test {
         vault.depositUnderlying(depositAmount);
         vm.stopPrank();
 
-        // Use amounts where swap output covers flash loan: mint*0.99 >= flashLoan
         uint256 flashLoanAmount = 2 ether;
         uint256 totalDeposit = depositAmount + flashLoanAmount;
         uint256 mintAmount = 3 ether;
-        // vault debtSlippage=200bps, enforcement floor=400bps (2x)
-        // minAcceptable = mintAmount * 9600/10000 = 2.88 ether
-        uint256 validDebtTradeMin = mintAmount * 9600 / 10000; // exactly at threshold
+        uint256 validDebtTradeMin = mintAmount * 9800 / 10000;
 
         vm.prank(alice);
         vault.leverage(depositAmount, flashLoanAmount, totalDeposit, mintAmount, validDebtTradeMin);
@@ -490,17 +499,15 @@ contract FullIntegrationTest is Test {
 
     // ============ Admin Function Validation Tests ============
 
-    function test_AdaptersAreImmutable() public view {
-        // Adapters are set at construction and cannot be changed
-        assertEq(vault.defaultConverter(), address(converter), "Converter should be set at construction");
-        assertEq(vault.defaultFlashLoanAdapter(), address(flashLoanAdapter), "Flash loan adapter should be set at construction");
-        assertEq(vault.defaultSwapper(), address(swapper), "Swapper should be set at construction");
+    function test_AdaptersAreSet() public view {
+        assertEq(vault.converter(), address(converter), "Converter should be set at initialization");
+        assertEq(vault.flashLoanAdapter(), address(flashLoanAdapter), "Flash loan adapter should be set at initialization");
+        assertEq(vault.swapper(), address(swapper), "Swapper should be set at initialization");
     }
 
     // ============ Emergency Sweep Tests ============
 
     function test_EmergencySweep_WorksForOwner() public {
-        // Send some random tokens to vault
         IntMockERC20 randomToken = new IntMockERC20("Random", "RND");
         randomToken.mint(address(vault), 50 ether);
 
@@ -512,21 +519,22 @@ contract FullIntegrationTest is Test {
     }
 
     function test_EmergencySweep_RevertsForNonOwner() public {
+        IntMockERC20 randomToken = new IntMockERC20("Random", "RND");
         vm.prank(alice);
         vm.expectRevert();
-        vault.emergencySweepToken(address(weth), 1 ether, alice);
+        vault.emergencySweepToken(address(randomToken), 1 ether, alice);
     }
 
     function test_EmergencySweep_RejectsZeroRecipient() public {
+        IntMockERC20 randomToken = new IntMockERC20("Random", "RND");
         vm.prank(owner);
-        vm.expectRevert("Invalid recipient");
-        vault.emergencySweepToken(address(weth), 1 ether, address(0));
+        vm.expectRevert(LeveragedVault.InvalidRecipient.selector);
+        vault.emergencySweepToken(address(randomToken), 1 ether, address(0));
     }
 
     // ============ Receive ETH Test ============
 
     function test_VaultCanReceiveETH() public {
-        // Vault should accept ETH (needed for converter operations)
         vm.deal(address(this), 1 ether);
         (bool success,) = address(vault).call{value: 1 ether}("");
         assertTrue(success, "Vault should accept ETH");
@@ -541,7 +549,6 @@ contract FullIntegrationTest is Test {
         vault.depositUnderlying(10 ether);
         vm.stopPrank();
 
-        // Parameterless version should use vault defaults
         (uint256 clampedDeposit1,,,,) = vault.getLeverageParameters(10 ether);
         (uint256 clampedDeposit2,,,,) = vault.getLeverageParameters(10 ether, 100, 200);
 
@@ -560,7 +567,7 @@ contract FullIntegrationTest is Test {
 
     function test_SetSlippageParameters_RejectsExcessive() public {
         vm.prank(owner);
-        vm.expectRevert("Underlying slippage too high");
+        vm.expectRevert(LeveragedVault.SlippageTooHigh.selector);
         vault.setSlippageParameters(10000, 200);
     }
 }
@@ -632,13 +639,11 @@ contract ShareValueInvariantTest is Test {
         leverager.setFlashLoanAdapterApproval(address(flashLoan), true);
         leverager.setSwapperApproval(address(swapper), true);
 
-        vault = new LeveragedVault(
-            "Leveraged Vault", "LVLT",
+        vault = _deployVaultClone(
             address(yieldToken), address(weth),
             address(alchemist), address(leverager),
-            100, 200,
             address(converter), address(flashLoan), address(swapper),
-            address(weth)
+            owner
         );
         vm.stopPrank();
 
@@ -647,15 +652,13 @@ contract ShareValueInvariantTest is Test {
     }
 
     /// @notice Total share value should always equal total assets (pool balance when no Alchemist position)
-    /// @dev This invariant holds when there's no leveraged position (pool-only deposits/withdrawals)
     function invariant_TotalShareValueEqualsPoolBalance() public view {
         uint256 totalSupply = vault.totalSupply();
-        if (totalSupply == 0) return; // Skip when empty
+        if (totalSupply == 0) return;
 
         uint256 totalAssets = vault.totalAssets();
         uint256 poolBalance = vault.getDepositPoolBalance();
 
-        // When no position exists, totalAssets should equal pool balance
         if (vault.vaultPositionId() == 0) {
             assertEq(totalAssets, poolBalance, "Total assets must equal pool balance without position");
         }
@@ -663,8 +666,7 @@ contract ShareValueInvariantTest is Test {
 
     /// @notice Total supply should never be negative (obvious but validates no underflow)
     function invariant_TotalSupplyNonNegative() public view {
-        // totalSupply is uint256 so it can't be negative, but check it's reasonable
-        assertLe(vault.totalSupply(), 1000 ether * 3, "Total supply should be bounded");
+        assertLe(vault.totalSupply(), 1000 ether * 3 * 1000, "Total supply should be bounded");
     }
 
     /// @notice Pool balance should be consistent with deposits minus withdrawals

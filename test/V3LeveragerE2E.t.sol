@@ -2,7 +2,6 @@
 pragma solidity 0.8.26;
 
 import "forge-std/Test.sol";
-import "forge-std/console.sol";
 
 // AlchemistV3 from source
 import "../alchemix-v3/src/AlchemistV3.sol";
@@ -148,7 +147,7 @@ contract V3LeveragerE2ETest is Test {
         );
 
         // 2. Deploy WstETH adapter
-        tokenAdapter = new WstETHAdapter(address(stEthSwapper), 9950);
+        tokenAdapter = new WstETHAdapter(address(stEthSwapper), 9950, deployer);
 
         // 3. Deploy Transmuter
         ITransmuter.TransmuterInitializationParams memory transmuterParams = ITransmuter.TransmuterInitializationParams({
@@ -223,7 +222,8 @@ contract V3LeveragerE2ETest is Test {
             CURVE_STETH_POOL,
             CURVE_STETH_ETH_INDEX,
             CURVE_STETH_INDEX,
-            9950
+            9950,
+            deployer
         );
     }
 
@@ -241,11 +241,10 @@ contract V3LeveragerE2ETest is Test {
         swappers[0] = address(swapper);
         leverager.batchApprove(converters, flashLoanAdapters, swappers);
 
-        // Deploy factory and vault
-        factory = new LeveragedVaultFactory();
+        // Deploy implementation, factory, and vault
+        LeveragedVault impl = new LeveragedVault();
+        factory = new LeveragedVaultFactory(address(impl));
         address vaultAddr = factory.createVault(
-            "lvWSTETH",
-            "Leveraged wstETH Vault",
             WSTETH,
             WETH,
             address(alchemist),
@@ -297,9 +296,9 @@ contract V3LeveragerE2ETest is Test {
         assertTrue(leverager.isApprovedSwapper(address(swapper)));
 
         // Verify vault configuration
-        assertEq(vault.defaultConverter(), address(converter));
-        assertEq(vault.defaultFlashLoanAdapter(), address(flashLoanAdapter));
-        assertEq(vault.defaultSwapper(), address(swapper));
+        assertEq(vault.converter(), address(converter));
+        assertEq(vault.flashLoanAdapter(), address(flashLoanAdapter));
+        assertEq(vault.swapper(), address(swapper));
     }
 
     function test_E2E_ConverterWETHToWstETH() public {
@@ -321,21 +320,17 @@ contract V3LeveragerE2ETest is Test {
 
         assertGt(wstEthReceived, 0, "Should receive wstETH");
         assertEq(wstEthAfter - wstEthBefore, wstEthReceived, "Balance should increase");
-
-        console.log("Converted WETH to wstETH:", wstEthReceived / 1e18);
     }
 
     function test_E2E_FlashLoanAvailability() public view {
         uint256 maxWETH = flashLoanAdapter.maxFlashLoan(WETH);
 
-        console.log("Max WETH flash loan:", maxWETH / 1e18);
         assertTrue(maxWETH > 1000 ether, "Should have significant WETH liquidity");
         assertEq(flashLoanAdapter.getFlashLoanFee(WETH, 100 ether), 0, "Balancer should have 0 fee");
     }
 
     function test_E2E_AaveFlashLoanFee() public view {
         uint256 maxWETH = aaveFlashLoanAdapter.maxFlashLoan(WETH);
-        console.log("Aave max WETH flash loan (adapter):", maxWETH / 1e18);
 
         uint256 fee = aaveFlashLoanAdapter.getFlashLoanFee(WETH, 100 ether);
         // 5 bps = 0.05 WETH on 100 WETH
@@ -358,8 +353,6 @@ contract V3LeveragerE2ETest is Test {
         assertGt(shares, 0, "Should receive shares");
         assertEq(sharesAfter - sharesBefore, shares, "Share balance should increase");
         assertEq(vault.getDepositPoolBalance(), depositAmount, "Pool should have WETH");
-
-        console.log("Deposited ETH, received shares");
     }
 
     function test_E2E_LeveragePosition() public {
@@ -385,7 +378,6 @@ contract V3LeveragerE2ETest is Test {
 
         // Preview the conversion
         uint256 expectedWstETH = converter.previewToYield(depositAmount);
-        console.log("Expected wstETH from conversion:", expectedWstETH / 1e18);
 
         // 3. Directly deposit wstETH to Alchemist (bypassing full leverage)
         // First, convert WETH → wstETH in the vault
@@ -394,7 +386,6 @@ contract V3LeveragerE2ETest is Test {
         uint256 actualWstETH = converter.toYield(depositAmount, address(vault), 0);
         vm.stopPrank();
 
-        console.log("Actual wstETH received:", actualWstETH / 1e18);
         assertGt(actualWstETH, 0, "Should receive wstETH");
 
         // 4. Deposit wstETH to Alchemist and create position
@@ -407,16 +398,15 @@ contract V3LeveragerE2ETest is Test {
         uint256 positionId = 1;  // First position
 
         (uint256 collateral, , ) = alchemist.getCDP(positionId);
-        console.log("Collateral deposited (wstETH):", collateral / 1e18);
 
         assertEq(collateral, actualWstETH, "Collateral should match deposited amount");
     }
 
     function test_E2E_ImmutableAdaptersMatchDeployment() public view {
         // Verify adapters are set at construction and match what was deployed
-        assertEq(vault.defaultConverter(), address(converter), "Converter should be immutable");
-        assertEq(vault.defaultFlashLoanAdapter(), address(flashLoanAdapter), "Flash loan adapter should be immutable");
-        assertEq(vault.defaultSwapper(), address(swapper), "Swapper should be immutable");
+        assertEq(vault.converter(), address(converter), "Converter should be immutable");
+        assertEq(vault.flashLoanAdapter(), address(flashLoanAdapter), "Flash loan adapter should be immutable");
+        assertEq(vault.swapper(), address(swapper), "Swapper should be immutable");
 
         // Verify leverager has approved these adapters
         assertTrue(leverager.isApprovedConverter(address(converter)), "Converter should be approved");
@@ -484,16 +474,10 @@ contract V3LeveragerE2ETest is Test {
         uint256 aliceShares = vault.depositUnderlying{value: 5 ether}();
         vm.stopPrank();
 
-        console.log("Alice deposited 5 ETH, got shares:", aliceShares);
-
         // Bob deposits ETH
         vm.startPrank(bob);
         uint256 bobShares = vault.depositUnderlying{value: 10 ether}();
         vm.stopPrank();
-
-        console.log("Bob deposited 10 ETH, got shares:", bobShares);
-        console.log("Pool balance:", vault.getDepositPoolBalance());
-        console.log("Total supply:", vault.totalSupply());
 
         // Verify deposits work and shares are positive
         assertGt(aliceShares, 0, "Alice should receive shares");
@@ -527,11 +511,8 @@ contract V3LeveragerE2ETest is Test {
         uint256 positionId = 1;  // First position
         (uint256 collateral, , ) = alchemist.getCDP(positionId);
 
-        console.log("Collateral deposited (wstETH):", collateral / 1e18);
-
         // Calculate max mintable (90% of capacity for safety)
         uint256 maxMint = (collateral * 1e18) / MIN_COLLATERALIZATION * 90 / 100;
-        console.log("Max safe mint (alETH):", maxMint / 1e18);
 
         // Mint some debt
         vm.prank(address(vault));
@@ -540,11 +521,9 @@ contract V3LeveragerE2ETest is Test {
         // 4. Check health after mint
         uint256 debt;
         (collateral, debt, ) = alchemist.getCDP(positionId);
-        console.log("Debt after mint (alETH):", debt / 1e18);
 
         // Calculate collateralization ratio
         uint256 collateralRatio = (collateral * 1e18) / debt;
-        console.log("Collateralization ratio %:", collateralRatio * 100 / 1e18);
 
         // Should be above minimum (111%)
         assertTrue(collateralRatio >= MIN_COLLATERALIZATION, "Should be properly collateralized");
@@ -562,7 +541,6 @@ contract V3LeveragerE2ETest is Test {
         uint256 depositGas = gasBefore - gasleft();
         vm.stopPrank();
 
-        console.log("Gas used for deposit:", depositGas);
         assertTrue(depositGas < 200_000, "Deposit gas should be under 200k");
 
         // 2. Measure gas for WETH→wstETH conversion
@@ -573,7 +551,6 @@ contract V3LeveragerE2ETest is Test {
         uint256 conversionGas = gasBefore - gasleft();
         vm.stopPrank();
 
-        console.log("Gas used for WETH->wstETH conversion:", conversionGas);
         assertTrue(conversionGas < 500_000, "Conversion gas should be under 500k");
 
         // 3. Measure gas for Alchemist deposit
@@ -584,10 +561,7 @@ contract V3LeveragerE2ETest is Test {
         uint256 alchemistDepositGas = gasBefore - gasleft();
         vm.stopPrank();
 
-        console.log("Gas used for Alchemist deposit:", alchemistDepositGas);
         assertTrue(alchemistDepositGas < 500_000, "Alchemist deposit gas should be under 500k");
-
-        console.log("Total gas (deposit + convert + alchemist):", depositGas + conversionGas + alchemistDepositGas);
     }
 
     // ============ Error Cases ============
@@ -601,7 +575,8 @@ contract V3LeveragerE2ETest is Test {
             CURVE_STETH_POOL,
             CURVE_STETH_ETH_INDEX,
             CURVE_STETH_INDEX,
-            9950
+            9950,
+            deployer
         );
 
         // Verify the unapproved converter is not in the leverager registry
@@ -613,7 +588,7 @@ contract V3LeveragerE2ETest is Test {
         // The vault's immutable adapters are approved, so leverage() works
         // But a vault deployed with the unapproved converter would fail at leverage time
         assertTrue(
-            leverager.isApprovedConverter(vault.defaultConverter()),
+            leverager.isApprovedConverter(vault.converter()),
             "Vault's default converter must be approved in leverager"
         );
     }

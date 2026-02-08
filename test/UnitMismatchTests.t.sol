@@ -5,6 +5,7 @@ import "forge-std/Test.sol";
 import "forge-std/StdStorage.sol";
 
 import "../src/LeveragedVault.sol";
+import "lib/openzeppelin-contracts/contracts/proxy/Clones.sol";
 
 contract MockERC20 {
     string public name;
@@ -94,6 +95,9 @@ contract MockAlchemistV3Units {
     function normalizeDebtTokensToUnderlying(uint256 amount) external pure returns (uint256) {
         return amount;
     }
+    function normalizeUnderlyingTokensToDebt(uint256 amount) external pure returns (uint256) {
+        return amount;
+    }
 
     function convertYieldTokensToUnderlying(uint256 amount) external view returns (uint256) {
         return amount * yieldToUnderlyingRate / 1e18;
@@ -122,9 +126,9 @@ contract UnitMismatchTests is Test {
         alchemist.setDepositCap(80 ether);
         alchemist.setTotalDeposited(0);
 
-        vault = new LeveragedVault(
-            "Leveraged Vault",
-            "LVLT",
+        LeveragedVault impl = new LeveragedVault();
+        vault = LeveragedVault(payable(Clones.clone(address(impl))));
+        vault.initialize(
             address(yieldToken),
             address(underlying),
             address(alchemist),
@@ -134,7 +138,8 @@ contract UnitMismatchTests is Test {
             address(0xCAFE),
             address(0xF00D),
             address(0x1234),
-            address(0x5678)
+            address(0x5678),
+            address(this)
         );
     }
 

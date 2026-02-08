@@ -5,12 +5,13 @@ import "forge-std/Test.sol";
 import "../src/LeveragedVaultFactory.sol";
 import "../src/LeveragedVault.sol";
 import "../src/interfaces/ILeveragedVaultFactory.sol";
-import "lib/openzeppelin-contracts/contracts/token/ERC20/ERC20.sol";
-
-contract DummyContract {}
+contract DummyContract {
+    function symbol() external pure returns (string memory) { return "MOCK"; }
+}
 
 contract LeveragedVaultFactoryTest is Test {
     LeveragedVaultFactory public factory;
+    LeveragedVault public impl;
 
     address public owner = address(this);
     address public nonOwner = address(0x100);
@@ -27,8 +28,9 @@ contract LeveragedVaultFactoryTest is Test {
 
 
     function setUp() public {
-        // Deploy factory
-        factory = new LeveragedVaultFactory();
+        // Deploy implementation and factory
+        impl = new LeveragedVault();
+        factory = new LeveragedVaultFactory(address(impl));
 
         // Deploy dummy contracts to satisfy contract checks
         mockAlchemist = address(new DummyContract());
@@ -58,14 +60,18 @@ contract LeveragedVaultFactoryTest is Test {
         factory.transferOwnership(address(0x999));
     }
 
+    // ===== IMPLEMENTATION TESTS =====
+
+    function testImplementationIsSet() public view {
+        assertEq(factory.IMPLEMENTATION(), address(impl), "Implementation should be set");
+    }
+
     // ===== ACCESS CONTROL TESTS =====
 
     function testOnlyOwnerCanCreate() public {
         vm.prank(nonOwner);
         vm.expectRevert();
         factory.createVault(
-            "Test Vault",
-            "TVAULT",
             mockYieldToken,
             mockUnderlyingToken,
             mockAlchemist,
@@ -82,10 +88,8 @@ contract LeveragedVaultFactoryTest is Test {
     // ===== VALIDATION TESTS =====
 
     function testRevertZeroYieldToken() public {
-        vm.expectRevert("Yield token cannot be 0");
+        vm.expectRevert(LeveragedVaultFactory.ZeroAddress.selector);
         factory.createVault(
-            "Test Vault",
-            "TVAULT",
             address(0),
             mockUnderlyingToken,
             mockAlchemist,
@@ -100,10 +104,8 @@ contract LeveragedVaultFactoryTest is Test {
     }
 
     function testRevertZeroUnderlyingToken() public {
-        vm.expectRevert("Underlying token cannot be 0");
+        vm.expectRevert(LeveragedVaultFactory.ZeroAddress.selector);
         factory.createVault(
-            "Test Vault",
-            "TVAULT",
             mockYieldToken,
             address(0),
             mockAlchemist,
@@ -118,10 +120,8 @@ contract LeveragedVaultFactoryTest is Test {
     }
 
     function testRevertZeroAlchemist() public {
-        vm.expectRevert("Alchemist cannot be 0");
+        vm.expectRevert(LeveragedVaultFactory.ZeroAddress.selector);
         factory.createVault(
-            "Test Vault",
-            "TVAULT",
             mockYieldToken,
             mockUnderlyingToken,
             address(0),
@@ -136,10 +136,8 @@ contract LeveragedVaultFactoryTest is Test {
     }
 
     function testRevertZeroLeverager() public {
-        vm.expectRevert("Leverager cannot be 0");
+        vm.expectRevert(LeveragedVaultFactory.ZeroAddress.selector);
         factory.createVault(
-            "Test Vault",
-            "TVAULT",
             mockYieldToken,
             mockUnderlyingToken,
             mockAlchemist,
@@ -154,10 +152,8 @@ contract LeveragedVaultFactoryTest is Test {
     }
 
     function testRevertZeroWeth() public {
-        vm.expectRevert("WETH cannot be 0");
+        vm.expectRevert(LeveragedVaultFactory.ZeroAddress.selector);
         factory.createVault(
-            "Test Vault",
-            "TVAULT",
             mockYieldToken,
             mockUnderlyingToken,
             mockAlchemist,
@@ -172,10 +168,8 @@ contract LeveragedVaultFactoryTest is Test {
     }
 
     function testRevertZeroDefaultConverter() public {
-        vm.expectRevert("Default converter cannot be 0");
+        vm.expectRevert(LeveragedVaultFactory.ZeroAddress.selector);
         factory.createVault(
-            "Test Vault",
-            "TVAULT",
             mockYieldToken,
             mockUnderlyingToken,
             mockAlchemist,
@@ -190,10 +184,8 @@ contract LeveragedVaultFactoryTest is Test {
     }
 
     function testRevertZeroDefaultFlashLoanAdapter() public {
-        vm.expectRevert("Default flash loan adapter cannot be 0");
+        vm.expectRevert(LeveragedVaultFactory.ZeroAddress.selector);
         factory.createVault(
-            "Test Vault",
-            "TVAULT",
             mockYieldToken,
             mockUnderlyingToken,
             mockAlchemist,
@@ -208,10 +200,8 @@ contract LeveragedVaultFactoryTest is Test {
     }
 
     function testRevertZeroDefaultSwapper() public {
-        vm.expectRevert("Default swapper cannot be 0");
+        vm.expectRevert(LeveragedVaultFactory.ZeroAddress.selector);
         factory.createVault(
-            "Test Vault",
-            "TVAULT",
             mockYieldToken,
             mockUnderlyingToken,
             mockAlchemist,
@@ -228,10 +218,8 @@ contract LeveragedVaultFactoryTest is Test {
     // ===== SLIPPAGE VALIDATION TESTS =====
 
     function testRevertExcessiveUnderlyingSlippage() public {
-        vm.expectRevert("Underlying slippage basis points must be less than 10000");
+        vm.expectRevert(LeveragedVaultFactory.SlippageTooHigh.selector);
         factory.createVault(
-            "Test Vault",
-            "TVAULT",
             mockYieldToken,
             mockUnderlyingToken,
             mockAlchemist,
@@ -246,10 +234,8 @@ contract LeveragedVaultFactoryTest is Test {
     }
 
     function testRevertExcessiveDebtSlippage() public {
-        vm.expectRevert("Debt slippage basis points must be less than 10000");
+        vm.expectRevert(LeveragedVaultFactory.SlippageTooHigh.selector);
         factory.createVault(
-            "Test Vault",
-            "TVAULT",
             mockYieldToken,
             mockUnderlyingToken,
             mockAlchemist,
@@ -265,14 +251,12 @@ contract LeveragedVaultFactoryTest is Test {
 
     // ===== VAULT TRACKING TESTS =====
 
-    function testVaultsInitiallyZero() public view {
-        assertEq(factory.vaults(mockYieldToken), address(0), "No vault should exist initially");
+    function testVaultsInitiallyEmpty() public view {
+        assertEq(factory.getVaultsByYieldToken(mockYieldToken).length, 0, "No vault should exist initially");
     }
 
-    function testRevertDuplicateYieldToken() public {
-        factory.createVault(
-            "Test Vault",
-            "TVAULT",
+    function testGetVaultsByYieldTokenReturnsCreatedVault() public {
+        address vault = factory.createVault(
             mockYieldToken,
             mockUnderlyingToken,
             mockAlchemist,
@@ -285,10 +269,31 @@ contract LeveragedVaultFactoryTest is Test {
             mockWeth
         );
 
-        vm.expectRevert("Vault already exists for yield token + alchemist pair");
+        address[] memory vaults = factory.getVaultsByYieldToken(mockYieldToken);
+        assertEq(vaults.length, 1, "Should have one vault");
+        assertEq(vaults[0], vault, "Should be the created vault");
+
+        LeveragedVault lv = LeveragedVault(payable(vault));
+        assertEq(lv.name(), "Logris Leveraged MOCK", "Name should derive from underlying symbol");
+        assertEq(lv.symbol(), "lvMOCK", "Symbol should derive from underlying symbol");
+    }
+
+    function testRevertDuplicateYieldToken() public {
         factory.createVault(
-            "Test Vault 2",
-            "TVAULT2",
+            mockYieldToken,
+            mockUnderlyingToken,
+            mockAlchemist,
+            mockLeverager,
+            100,
+            300,
+            mockConverter,
+            mockFlashLoanAdapter,
+            mockSwapper,
+            mockWeth
+        );
+
+        vm.expectRevert(LeveragedVaultFactory.VaultAlreadyExists.selector);
+        factory.createVault(
             mockYieldToken,
             mockUnderlyingToken,
             mockAlchemist,
@@ -303,10 +308,8 @@ contract LeveragedVaultFactoryTest is Test {
     }
 
     function testRevertNonContractYieldToken() public {
-        vm.expectRevert("Yield token must be a contract");
+        vm.expectRevert(LeveragedVaultFactory.NotAContract.selector);
         factory.createVault(
-            "Test Vault",
-            "TVAULT",
             address(0xDEAD),
             mockUnderlyingToken,
             mockAlchemist,
@@ -317,6 +320,55 @@ contract LeveragedVaultFactoryTest is Test {
             mockFlashLoanAdapter,
             mockSwapper,
             mockWeth
+        );
+    }
+
+    // ===== INITIALIZATION PROTECTION TESTS =====
+
+    function testImplementationCannotBeInitialized() public {
+        vm.expectRevert();
+        impl.initialize(
+            mockYieldToken,
+            mockUnderlyingToken,
+            mockAlchemist,
+            mockLeverager,
+            100,
+            300,
+            mockConverter,
+            mockFlashLoanAdapter,
+            mockSwapper,
+            mockWeth,
+            address(this)
+        );
+    }
+
+    function testCloneCannotBeDoubleInitialized() public {
+        address vault = factory.createVault(
+            mockYieldToken,
+            mockUnderlyingToken,
+            mockAlchemist,
+            mockLeverager,
+            100,
+            300,
+            mockConverter,
+            mockFlashLoanAdapter,
+            mockSwapper,
+            mockWeth
+        );
+
+        vm.expectRevert();
+        LeveragedVault(payable(vault)).initialize(
+            mockYieldToken,
+            mockUnderlyingToken,
+            mockAlchemist,
+            mockLeverager,
+            100,
+            300,
+            mockConverter,
+            mockFlashLoanAdapter,
+            mockSwapper,
+            mockWeth,
+            address(this)
         );
     }
 }

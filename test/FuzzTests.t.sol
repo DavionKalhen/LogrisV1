@@ -3,6 +3,7 @@ pragma solidity 0.8.26;
 
 import "forge-std/Test.sol";
 import "lib/openzeppelin-contracts/contracts/token/ERC20/ERC20.sol";
+import "lib/openzeppelin-contracts/contracts/proxy/Clones.sol";
 import "../src/LeveragedVault.sol";
 
 // ============ Minimal Mocks for Fuzz Testing ============
@@ -122,6 +123,7 @@ contract FuzzMockAlchemistV3 {
     function convertYieldTokensToUnderlying(uint256 amount) external pure returns (uint256) { return amount; }
     function convertUnderlyingTokensToYield(uint256 amount) external pure returns (uint256) { return amount; }
     function normalizeDebtTokensToUnderlying(uint256 amount) external pure returns (uint256) { return amount; }
+    function normalizeUnderlyingTokensToDebt(uint256 amount) external pure returns (uint256) { return amount; }
 
     function approveMint(uint256, address, uint256) external {}
 
@@ -177,9 +179,9 @@ contract LeveragedVaultFuzzTest is Test {
         debtToken = new FuzzMockERC20("Debt", "DBT");
         alchemist = new FuzzMockAlchemistV3(address(yieldToken), address(debtToken));
 
-        vault = new LeveragedVault(
-            "Leveraged Vault",
-            "LVLT",
+        LeveragedVault impl = new LeveragedVault();
+        vault = LeveragedVault(payable(Clones.clone(address(impl))));
+        vault.initialize(
             address(yieldToken),
             address(underlying),
             address(alchemist),
@@ -189,7 +191,8 @@ contract LeveragedVaultFuzzTest is Test {
             address(0xCAFE),
             address(0xF00D),
             address(0xBEEF),
-            address(underlying)
+            address(underlying),
+            address(this)
         );
     }
 
@@ -205,8 +208,8 @@ contract LeveragedVaultFuzzTest is Test {
         uint256 shares = vault.depositUnderlying(amount);
         vm.stopPrank();
 
-        assertEq(shares, amount, "First depositor should get 1:1 shares");
-        assertEq(vault.balanceOf(alice), amount, "Balance should match shares");
+        assertEq(shares, amount * 1000, "First depositor should get 1000:1 shares (offset=3)");
+        assertEq(vault.balanceOf(alice), amount * 1000, "Balance should match shares");
     }
 
     /// @notice Multiple depositors should get shares proportional to their deposit relative to totalAssets
@@ -236,7 +239,7 @@ contract LeveragedVaultFuzzTest is Test {
         uint256 totalShares = vault.totalSupply();
         uint256 totalDeposits = amount1 + amount2;
         // Allow 2 wei rounding error per deposit
-        assertApproxEqAbs(totalShares, totalDeposits, 2, "Total shares should approximate total deposits");
+        assertApproxEqAbs(totalShares, totalDeposits * 1000, 2000, "Total shares should approximate total deposits * 1000 (offset=3)");
     }
 
     /// @notice convertSharesToUnderlyingTokens and convertUnderlyingTokensToShares should be inverse
@@ -449,11 +452,12 @@ contract LeveragedVaultFuzzTest is Test {
         assertEq(underlying_, 0, "Zero shares should convert to zero underlying");
     }
 
-    /// @notice convertSharesToUnderlyingTokens should return 0 when supply is 0
-    function testFuzz_ZeroSupplyReturnsZero(uint256 shares) public view {
+    /// @notice convertSharesToUnderlyingTokens should return shares/1000 when supply is 0 (offset=3)
+    function testFuzz_ZeroSupplyReturnsScaledShares(uint256 shares) public view {
         shares = bound(shares, 1, 1e30);
         uint256 underlying_ = vault.convertSharesToUnderlyingTokens(shares);
-        assertEq(underlying_, 0, "Should return 0 when supply is 0");
+        // With offset=3: convertToAssets(shares) = shares * (0+1) / (0+1000) = shares/1000
+        assertEq(underlying_, shares / 1000, "Should return shares/1000 when supply is 0 (offset=3)");
     }
 
     /// @notice Multiple sequential deposits should maintain share value invariant
@@ -487,11 +491,11 @@ contract LeveragedVaultFuzzTest is Test {
         vm.prank(charlie);
         vault.depositUnderlying(deposit3);
 
-        // Total supply should approximate total deposits
+        // Total supply should approximate total deposits * 1000 (offset=3)
         uint256 totalDeposits = deposit1 + deposit2 + deposit3;
         uint256 totalSupply = vault.totalSupply();
-        assertApproxEqAbs(totalSupply, totalDeposits, 3,
-            "Total supply should approximate total deposits");
+        assertApproxEqAbs(totalSupply, totalDeposits * 1000, 3000,
+            "Total supply should approximate total deposits * 1000 (offset=3)");
 
         // Each user's share value should approximate their deposit
         uint256 aliceValue = vault.convertSharesToUnderlyingTokens(vault.balanceOf(alice));

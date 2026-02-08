@@ -233,7 +233,7 @@ contract CurveSwapperUnitTest is Test {
         MockERC20Swap underlying = new MockERC20Swap("Underlying", "UND");
         MockCurvePoolSwap pool = new MockCurvePoolSwap(address(debt), address(underlying), 0, 1, false);
 
-        vm.expectRevert("Invalid WETH");
+        vm.expectRevert(CurveSwapper.ZeroAddress.selector);
         new CurveSwapper(
             address(pool),
             address(debt),
@@ -252,7 +252,7 @@ contract CurveSwapperUnitTest is Test {
         MockWETHSwap weth = new MockWETHSwap();
         MockCurvePoolSwap pool = new MockCurvePoolSwap(address(debt), address(underlying), 0, 1, true);
 
-        vm.expectRevert("Underlying must be WETH");
+        vm.expectRevert(CurveSwapper.UnderlyingMustBeWETH.selector);
         new CurveSwapper(
             address(pool),
             address(debt),

@@ -208,10 +208,6 @@ contract CurveSwapperForkTest is Test {
         uint256 stethAmount = 1 ether;
         (uint256 expected, uint256 minimum) = swapper.previewSwapDebtToUnderlying(stethAmount);
 
-        console.log("Preview 1 stETH -> WETH:");
-        console.log("  Expected:", expected);
-        console.log("  Minimum:", minimum);
-
         assertTrue(expected > 0, "Should have expected output");
         assertTrue(minimum < expected, "Minimum should be less than expected");
         // stETH should be close to 1:1 with ETH
@@ -221,10 +217,6 @@ contract CurveSwapperForkTest is Test {
     function test_PreviewSwapUnderlyingToDebt() public view {
         uint256 wethAmount = 1 ether;
         (uint256 expected, uint256 minimum) = swapper.previewSwapUnderlyingToDebt(wethAmount);
-
-        console.log("Preview 1 WETH -> stETH:");
-        console.log("  Expected:", expected);
-        console.log("  Minimum:", minimum);
 
         assertTrue(expected > 0, "Should have expected output");
         // ETH should get slightly more stETH (stETH trades at slight discount)
@@ -239,8 +231,6 @@ contract CurveSwapperForkTest is Test {
         uint256 aliceStethBefore = IERC20(STETH).balanceOf(alice);
         uint256 aliceWethBefore = IERC20(WETH).balanceOf(alice);
 
-        console.log("Alice stETH before:", aliceStethBefore / 1e18);
-        console.log("Alice WETH before:", aliceWethBefore / 1e18);
         require(aliceStethBefore >= stethAmount, "Alice needs more stETH");
 
         (uint256 expectedWeth,) = swapper.previewSwapDebtToUnderlying(stethAmount);
@@ -258,10 +248,6 @@ contract CurveSwapperForkTest is Test {
         uint256 aliceStethAfter = IERC20(STETH).balanceOf(alice);
         uint256 aliceWethAfter = IERC20(WETH).balanceOf(alice);
 
-        console.log("Alice stETH after:", aliceStethAfter / 1e18);
-        console.log("Alice WETH after:", aliceWethAfter / 1e18);
-        console.log("WETH received:", wethReceived);
-
         // Note: stETH uses shares, so balance diff might not be exact
         assertTrue(aliceStethBefore > aliceStethAfter, "Should spend stETH");
         assertEq(aliceWethAfter - aliceWethBefore, wethReceived, "Should receive WETH");
@@ -274,7 +260,6 @@ contract CurveSwapperForkTest is Test {
         uint256 aliceStethBefore = IERC20(STETH).balanceOf(alice);
         uint256 aliceWethBefore = IERC20(WETH).balanceOf(alice);
 
-        console.log("Alice WETH before:", aliceWethBefore / 1e18);
         require(aliceWethBefore >= wethAmount, "Alice needs more WETH");
 
         (uint256 expectedSteth,) = swapper.previewSwapUnderlyingToDebt(wethAmount);
@@ -292,9 +277,6 @@ contract CurveSwapperForkTest is Test {
         uint256 aliceStethAfter = IERC20(STETH).balanceOf(alice);
         uint256 aliceWethAfter = IERC20(WETH).balanceOf(alice);
 
-        console.log("Alice WETH after:", aliceWethAfter / 1e18);
-        console.log("stETH received:", stethReceived);
-
         assertEq(aliceWethBefore - aliceWethAfter, wethAmount, "Should spend WETH");
         assertTrue(stethReceived > 0.99 ether, "Should receive ~1 stETH");
     }
@@ -305,9 +287,6 @@ contract CurveSwapperForkTest is Test {
         uint256 debtToUnderlying = swapper.getDebtToUnderlyingRate();
         uint256 underlyingToDebt = swapper.getUnderlyingToDebtRate();
 
-        console.log("stETH -> ETH rate:", debtToUnderlying * 100 / 1e18, "%");
-        console.log("ETH -> stETH rate:", underlyingToDebt * 100 / 1e18, "%");
-
         // Rates should be close to 1:1
         assertTrue(debtToUnderlying > 0.95e18 && debtToUnderlying < 1.05e18, "stETH->ETH should be ~1:1");
         assertTrue(underlyingToDebt > 0.99e18, "ETH->stETH should be >= 0.99");
@@ -315,7 +294,6 @@ contract CurveSwapperForkTest is Test {
 
     function test_GetSwapFee() public view {
         uint256 fee = swapper.getSwapFee();
-        console.log("Pool swap fee (basis points):", fee);
         assertTrue(fee <= 50, "Fee should be <= 0.5%");
     }
 
@@ -351,10 +329,6 @@ contract CurveSwapperForkTest is Test {
             address(this),
             ""
         );
-
-        console.log("Flash loan simulation:");
-        console.log("  Borrowed WETH:", flashLoanAmount / 1e18);
-        console.log("  Received stETH:", stethReceived / 1e18);
 
         assertTrue(stethReceived > flashLoanAmount * 99 / 100, "Should receive ~same amount of stETH");
     }

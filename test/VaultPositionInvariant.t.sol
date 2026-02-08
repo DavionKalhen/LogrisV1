@@ -3,6 +3,7 @@ pragma solidity 0.8.26;
 
 import "forge-std/Test.sol";
 import "lib/openzeppelin-contracts/contracts/token/ERC20/ERC20.sol";
+import "lib/openzeppelin-contracts/contracts/proxy/Clones.sol";
 import "../src/LeveragedVault.sol";
 
 contract MockERC20Token is ERC20 {
@@ -119,6 +120,9 @@ contract MockAlchemistV3 {
     function normalizeDebtTokensToUnderlying(uint256 amount) external pure returns (uint256) {
         return amount;
     }
+    function normalizeUnderlyingTokensToDebt(uint256 amount) external pure returns (uint256) {
+        return amount;
+    }
 
     function convertYieldTokensToUnderlying(uint256 amount) external pure returns (uint256) {
         return amount;
@@ -155,9 +159,9 @@ contract VaultPositionInvariantTest is Test {
         debtToken = new MockERC20Token("Debt", "DBT");
         alchemist = new MockAlchemistV3(address(yieldToken), address(debtToken));
 
-        vault = new LeveragedVault(
-            "Leveraged Vault",
-            "LVLT",
+        LeveragedVault impl = new LeveragedVault();
+        vault = LeveragedVault(payable(Clones.clone(address(impl))));
+        vault.initialize(
             address(yieldToken),
             address(underlying),
             address(alchemist),
@@ -167,7 +171,8 @@ contract VaultPositionInvariantTest is Test {
             address(0xCAFE),
             address(0xF00D),
             address(0xBEEF),
-            address(underlying)
+            address(underlying),
+            address(this)
         );
     }
 
@@ -181,7 +186,7 @@ contract VaultPositionInvariantTest is Test {
 
         alchemist.mintPosition(address(vault));
 
-        vm.expectRevert("Position already exists");
+        vm.expectRevert(LeveragedVault.PositionAlreadyExists.selector);
         vault.vaultDepositYieldTokens(10 ether);
     }
 
@@ -195,7 +200,7 @@ contract VaultPositionInvariantTest is Test {
 
         assertEq(nft.balanceOf(address(vault)), 2);
 
-        vm.expectRevert("Cannot sweep active position");
+        vm.expectRevert(LeveragedVault.CannotSweepActivePosition.selector);
         vault.sweepUnknownPosition(activeId, address(0xBEEF));
 
         vault.sweepUnknownPosition(extraId, address(0xBEEF));

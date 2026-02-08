@@ -116,7 +116,6 @@ contract EdgeCasesTest is Test {
         // Verify max flash loan returns a reasonable value
         uint256 maxAmount = adapter.maxFlashLoan(WETH);
         assertTrue(maxAmount > 1000 ether, "Should have significant WETH available");
-        console.log("Max WETH flash loan:", maxAmount / 1e18, "WETH");
     }
 
     function test_VerySmallAmount() public view {
@@ -191,25 +190,21 @@ contract GasOptimizationTest is Test {
         uint256 gasBefore = gasleft();
         adapter.getProvider();
         uint256 gasUsed = gasBefore - gasleft();
-        console.log("getProvider gas:", gasUsed);
         assertTrue(gasUsed < 10000, "getProvider should be cheap");
 
         gasBefore = gasleft();
         adapter.isTokenSupported(WETH);
         gasUsed = gasBefore - gasleft();
-        console.log("isTokenSupported gas:", gasUsed);
         assertTrue(gasUsed < 20000, "isTokenSupported should be reasonable");
 
         gasBefore = gasleft();
         adapter.maxFlashLoan(WETH);
         gasUsed = gasBefore - gasleft();
-        console.log("maxFlashLoan gas:", gasUsed);
         assertTrue(gasUsed < 20000, "maxFlashLoan should be reasonable");
 
         gasBefore = gasleft();
         adapter.getFlashLoanFee(WETH, 1 ether);
         gasUsed = gasBefore - gasleft();
-        console.log("getFlashLoanFee gas:", gasUsed);
         assertTrue(gasUsed < 5000, "getFlashLoanFee should be cheap");
     }
 
@@ -217,13 +212,9 @@ contract GasOptimizationTest is Test {
         uint256 gasBefore = gasleft();
         adapter.pause();
         uint256 pauseGas = gasBefore - gasleft();
-        console.log("pause gas:", pauseGas);
-
         gasBefore = gasleft();
         adapter.unpause();
         uint256 unpauseGas = gasBefore - gasleft();
-        console.log("unpause gas:", unpauseGas);
-
         // Admin functions should be efficient
         assertTrue(pauseGas < 50000, "pause should be efficient");
         assertTrue(unpauseGas < 50000, "unpause should be efficient");
