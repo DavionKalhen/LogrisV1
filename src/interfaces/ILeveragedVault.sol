@@ -11,46 +11,73 @@ import "./IERC4626.sol";
 interface ILeveragedVault is IERC4626 {
     // ============ Events ============
 
+    /// @notice Emitted when a user deposits underlying tokens into the vault.
+    /// @param sender The depositor address.
+    /// @param underlyingToken The underlying token deposited.
+    /// @param amount Amount of underlying tokens deposited.
     event DepositUnderlying(address indexed sender, address indexed underlyingToken, uint256 amount);
+    /// @notice Emitted when a user withdraws underlying tokens from the vault.
+    /// @param sender The withdrawer address.
+    /// @param underlyingToken The underlying token withdrawn.
+    /// @param shares Number of vault shares burned.
     event WithdrawUnderlying(address indexed sender, address indexed underlyingToken, uint256 shares);
+    /// @notice Emitted when a leverage operation is executed.
+    /// @param yieldToken The yield token used as collateral.
+    /// @param depositAmount Total underlying deposited (pool + flash loan).
+    /// @param debtAmount Net change in debt (positive = increased).
     event Leverage(address indexed yieldToken, uint256 depositAmount, int256 debtAmount);
 
     // ============ View Functions ============
 
-    /// @notice Returns the yield token address (e.g., wstETH)
+    /// @notice Returns the yield token address (e.g., wstETH).
+    /// @return yieldToken The yield token address.
     function getYieldToken() external view returns (address yieldToken);
 
-    /// @notice Returns the underlying token address (e.g., wstETH for wstETH vault)
+    /// @notice Returns the underlying token address (e.g., WETH).
+    /// @return underlyingToken The underlying token address.
     function getUnderlyingToken() external view returns (address underlyingToken);
 
-    /// @notice Returns the amount of underlying tokens sitting in the vault (not yet leveraged)
+    /// @notice Returns the amount of underlying tokens sitting in the vault (not yet leveraged).
+    /// @return amount The unleveraged pool balance.
     function getDepositPoolBalance() external view returns (uint256 amount);
 
-    /// @notice Returns the vault's total deposited collateral in Alchemist
+    /// @notice Returns the vault's total deposited collateral in Alchemist.
+    /// @return amount Collateral in yield token units.
     function getVaultDepositedBalance() external view returns (uint256 amount);
 
-    /// @notice Returns the vault's current debt balance in Alchemist
+    /// @notice Returns the vault's current debt balance in Alchemist.
+    /// @return amount The debt balance (positive).
     function getVaultDebtBalance() external view returns (int256 amount);
 
-    /// @notice Returns the vault's net redeemable balance (collateral - debt value)
+    /// @notice Returns the vault's net redeemable balance, excluding earmarked collateral.
+    /// @dev Earmarked collateral (committed to Alchemist transmuter) is subtracted before computing net value.
+    /// @return amount Redeemable value in underlying token units.
     function getVaultRedeemableBalance() external view returns (uint256 amount);
 
-    /// @notice Returns the remaining deposit capacity in Alchemist
+    /// @notice Returns the remaining deposit capacity in Alchemist.
+    /// @return amount Available capacity in yield token units.
     function getDepositCapacity() external view returns (uint256 amount);
 
-    /// @notice Returns the remaining borrow capacity for the vault's position
+    /// @notice Returns the remaining borrow capacity for the vault's position.
+    /// @return amount Borrowable debt tokens.
     function getBorrowCapacity() external view returns (uint256 amount);
 
-    /// @notice Returns shares that can be withdrawn without deleveraging
-    function getFreeWithdrawCapacity() external view returns (uint256 shares);
+    /// @notice Returns the underlying value that can be withdrawn without deleveraging.
+    /// @dev Excludes earmarked collateral committed to Alchemist transmuter.
+    /// @return amount Freely withdrawable underlying amount.
+    function getFreeWithdrawCapacity() external view returns (uint256 amount);
 
-    /// @notice Returns total shares that can be withdrawn (may require deleveraging)
-    function getTotalWithdrawCapacity() external view returns (uint256 shares);
+    /// @notice Returns the total underlying value that can be withdrawn (may require deleveraging).
+    /// @dev Excludes earmarked collateral committed to Alchemist transmuter.
+    /// @return amount Total withdrawable underlying amount.
+    function getTotalWithdrawCapacity() external view returns (uint256 amount);
 
-    /// @notice Converts underlying token amount to vault shares
+    /// @notice Converts underlying token amount to vault shares.
+    /// @return shares Equivalent vault shares for the given underlying amount.
     function convertUnderlyingTokensToShares(uint256 amount) external view returns (uint256 shares);
 
-    /// @notice Converts vault shares to underlying token amount
+    /// @notice Converts vault shares to underlying token amount.
+    /// @return amount Equivalent underlying tokens for the given shares.
     function convertSharesToUnderlyingTokens(uint256 shares) external view returns (uint256 amount);
 
     // ============ Parameter Calculation Functions ============
@@ -70,7 +97,7 @@ interface ILeveragedVault is IERC4626 {
     /// @param underlyingSlippageBasisPoints Slippage tolerance for underlying token operations (basis points)
     /// @param debtSlippageBasisPoints Slippage tolerance for debt token swap (basis points, includes peg deviation)
     /// @return clampedDeposit Actual deposit amount (clamped to available capacity)
-    /// @return flashLoanAmount Amount of underlying to flash loan
+    /// @return flashLoanAmount Amount of underlying to flash loan (excludes fee; fee is handled at execution time)
     /// @return underlyingDepositMin Minimum yield tokens expected from deposit
     /// @return mintAmount Amount of debt tokens to mint
     /// @return debtTradeMin Minimum underlying tokens expected from debt swap
@@ -124,8 +151,15 @@ interface ILeveragedVault is IERC4626 {
 
     // ============ Leverage Functions ============
 
-    /// @notice Execute leverage with explicit parameters
-    /// @dev Parameters should be obtained from getLeverageParameters()
+    /// @notice Execute leverage with explicit parameters.
+    /// @dev Parameters should be obtained from getLeverageParameters().
+    ///
+    ///      SECURITY NOTE: This function has no access control. Any address can call it
+    ///      to leverage the vault's pooled deposits. The _enforceMinimumSlippage check
+    ///      provides a floor on swap terms (the vault's configured debtSlippageBasisPoints),
+    ///      but a malicious caller can still leverage at that floor rather than optimal terms.
+    ///      Consider restricting to an operator role before mainnet deployment if this risk
+    ///      is unacceptable.
     /// @param clampedDeposit Amount of underlying to deposit from pool
     /// @param flashLoanAmount Amount to flash loan
     /// @param underlyingDepositMin Minimum yield tokens from deposit (slippage protection)
@@ -139,8 +173,9 @@ interface ILeveragedVault is IERC4626 {
         uint256 debtTradeMin
     ) external;
 
-    /// @notice Execute leverage with auto-computed parameters
-    /// @dev Convenience function that computes parameters internally
+    /// @notice Execute leverage with auto-computed parameters.
+    /// @dev Convenience function that computes parameters internally.
+    ///      Same access control note as leverage() — callable by any address.
     /// @param depositAmount Amount of underlying to leverage
     /// @param underlyingSlippageBasisPoints Slippage tolerance for underlying operations
     /// @param debtSlippageBasisPoints Slippage tolerance for debt swap

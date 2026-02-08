@@ -1,26 +1,28 @@
 // SPDX-License-Identifier: MIT
 pragma solidity 0.8.26;
 
-import "./ERC4626.sol";
+import "./ERC4626Upgradeable.sol";
 import "lib/openzeppelin-contracts/contracts/token/ERC20/IERC20.sol";
+import "lib/openzeppelin-contracts/contracts/token/ERC20/extensions/IERC20Metadata.sol";
 import "lib/openzeppelin-contracts/contracts/token/ERC20/utils/SafeERC20.sol";
-import "lib/openzeppelin-contracts/contracts/access/Ownable.sol";
-import "lib/openzeppelin-contracts/contracts/utils/ReentrancyGuard.sol";
-import "lib/openzeppelin-contracts/contracts/utils/Pausable.sol";
+import "openzeppelin-contracts-upgradeable/proxy/utils/Initializable.sol";
+import "openzeppelin-contracts-upgradeable/access/OwnableUpgradeable.sol";
+import "openzeppelin-contracts-upgradeable/utils/ReentrancyGuardUpgradeable.sol";
+import "openzeppelin-contracts-upgradeable/utils/PausableUpgradeable.sol";
 import "./interfaces/ILeveragedVault.sol";
 import "./interfaces/ILeveragedVaultCallback.sol";
 import "./interfaces/ILeveragerV3.sol";
 import "./interfaces/ITokenConverter.sol";
 import "./interfaces/flashloan/IFlashLoanAdapter.sol";
-import {IWETH} from "alchemix-v3/src/interfaces/IWETH.sol";
-import "../alchemix-v3/src/interfaces/IAlchemistV3.sol";
-import "../alchemix-v3/src/interfaces/IAlchemistV3Position.sol";
+import {IWETH} from "../alchemix-v3/src/interfaces/IWETH.sol";
+import {IAlchemistV3} from "../alchemix-v3/src/interfaces/IAlchemistV3.sol";
+import {IAlchemistV3Position} from "../alchemix-v3/src/interfaces/IAlchemistV3Position.sol";
 
 /**
  * @title LeveragedVault
  * @notice ERC4626 vault that manages a shared leveraged position in AlchemistV3
- * @dev Users deposit underlying tokens, and leverage() is called to create a shared leveraged position.
- *      All depositors benefit proportionally from the leveraged yield.
+ * @dev Deployed as an EIP-1167 minimal proxy clone. Each clone has its own storage
+ *      but delegates calls to a shared implementation contract.
  *
  * Architecture:
  * - Users call depositUnderlying() to add funds to the pool
@@ -28,147 +30,339 @@ import "../alchemix-v3/src/interfaces/IAlchemistV3Position.sol";
  * - All depositors share in the leveraged position proportionally
  * - Users can withdraw via withdrawUnderlying() (may trigger deleveraging)
  */
-contract LeveragedVault is Ownable, ERC4626, ReentrancyGuard, Pausable, ILeveragedVault, ILeveragedVaultCallback {
+contract LeveragedVault is
+    Initializable,
+    OwnableUpgradeable,
+    ERC4626Upgradeable,
+    ReentrancyGuardUpgradeable,
+    PausableUpgradeable,
+    ILeveragedVault,
+    ILeveragedVaultCallback
+{
     using SafeERC20 for IERC20;
 
     // ============ Constants ============
 
     uint256 constant FIXED_POINT_SCALAR = 1e18;
-    uint256 constant BASIS_POINTS = 10000;
+    uint256 constant BASIS_POINTS = 10_000;
 
-    // ============ Immutables ============
+    // ============ ERC-7201 Namespaced Storage ============
 
-    IAlchemistV3 public immutable alchemist;
-    IERC20 private immutable _underlyingToken;
-    address private immutable _yieldToken;
-    address public immutable leverager;
+    /// @custom:storage-location erc7201:logris.storage.LeveragedVault
+    struct LeveragedVaultStorage {
+        // Former immutables
+        IAlchemistV3 alchemist;
+        IERC20 underlyingToken;
+        address yieldToken;
+        address leverager;
+        IWETH wETH;
+        address converter;
+        address flashLoanAdapter;
+        address swapper;
+        // State variables
+        uint256 vaultPositionId;
+        bool operationInProgress;
+        uint32 underlyingSlippageBasisPoints;
+        uint32 debtSlippageBasisPoints;
+    }
 
-    /// @notice WETH contract address
-    IWETH public immutable wETH;
+    // keccak256(abi.encode(uint256(keccak256("logris.storage.LeveragedVault")) - 1)) & ~bytes32(uint256(0xff))
+    bytes32 private constant LeveragedVaultStorageLocation = 0x66ffcd6e30a6e809fc5f771c6fbd297089c8842af4bafa5c4f2a8100b3cc4600;
 
-    // ============ State ============
-
-    /// @notice The vault's single shared AlchemistV3 position NFT ID
-    uint256 public vaultPositionId;
-
-    /// @dev Prevent overlapping leverage/deleverage operations
-    bool private _operationInProgress;
-
-    // ============ Default Adapters (V3) ============
-
-    /// @notice Default token converter (underlying ↔ yield), set at construction
-    address public immutable defaultConverter;
-    /// @notice Default flash loan adapter, set at construction
-    address public immutable defaultFlashLoanAdapter;
-    /// @notice Default swapper (debt ↔ underlying), set at construction
-    address public immutable defaultSwapper;
-
-    // ============ Default Slippage Parameters ============
-
-    /// @notice Default slippage tolerance for underlying token operations (basis points, e.g. 100 = 1%)
-    uint32 public underlyingSlippageBasisPoints;
-    /// @notice Default slippage tolerance for debt token swap (basis points, includes peg deviation)
-    uint32 public debtSlippageBasisPoints;
+    function _getLeveragedVaultStorage() private pure returns (LeveragedVaultStorage storage $) {
+        assembly {
+            $.slot := LeveragedVaultStorageLocation
+        }
+    }
 
     // ============ Events ============
 
+    /// @notice Emitted when the vault executes a leverage operation.
+    /// @param depositAmount Amount of underlying tokens deposited from the pool.
+    /// @param flashLoanAmount Amount of underlying tokens obtained via flash loan.
+    /// @param debtMinted Amount of debt tokens minted during the leverage.
     event VaultLeveraged(uint256 depositAmount, uint256 flashLoanAmount, uint256 debtMinted);
+    /// @notice Emitted when the vault deleverages during a withdrawal.
+    /// @param sharesWithdrawn Number of vault shares burned.
+    /// @param debtBurned Amount of debt tokens repaid.
     event VaultDeleveraged(uint256 sharesWithdrawn, uint256 debtBurned);
+    /// @notice Emitted when the owner updates slippage parameters.
+    /// @param underlyingSlippageBps New slippage tolerance for underlying token operations.
+    /// @param debtSlippageBps New slippage tolerance for debt token swaps.
     event SlippageParametersUpdated(uint32 underlyingSlippageBps, uint32 debtSlippageBps);
+    /// @notice Emitted when the owner sweeps an accidentally-sent ERC20 token.
+    /// @param token The token address swept.
+    /// @param amount The amount transferred.
+    /// @param recipient The address that received the tokens.
+    event EmergencySweep(address indexed token, uint256 amount, address indexed recipient);
+    /// @notice Emitted when the owner sweeps ETH stuck in the vault.
+    /// @param amount The ETH amount transferred.
+    /// @param recipient The address that received the ETH.
+    event EmergencySweepETH(uint256 amount, address indexed recipient);
+    /// @notice Emitted when a vault clone is initialized.
+    /// @param yieldToken The yield token this vault manages.
+    /// @param underlyingToken The underlying token accepted for deposits.
+    /// @param alchemist The AlchemistV3 contract address.
+    event VaultInitialized(address indexed yieldToken, address indexed underlyingToken, address indexed alchemist);
+    /// @notice Emitted when an unknown position NFT is swept from the vault.
+    /// @param tokenId The position NFT ID transferred.
+    /// @param to The recipient address.
+    event PositionSwept(uint256 indexed tokenId, address indexed to);
+
+    // ============ Custom Errors ============
+
+    /// @dev Thrown when a required address parameter is address(0).
+    error ZeroAddress();
+    /// @dev Thrown when a function restricted to the leverager is called by another address.
+    error OnlyLeverager();
+    /// @dev Thrown when a new operation is attempted while another is in progress.
+    error OperationInProgress();
+    /// @dev Thrown when a deposit exceeds the maximum allowed by ERC4626.
+    error DepositExceedsMax();
+    /// @dev Thrown when ETH deposit is attempted on a non-WETH vault.
+    error NonWETHVault();
+    /// @dev Thrown when the requested leverage amount exceeds the pool's underlying balance.
+    error InsufficientPoolBalance();
+    /// @dev Thrown when a zero-amount deposit is attempted.
+    error ZeroDeposit();
+    /// @dev Thrown when yield token conversion returns fewer tokens than the minimum.
+    error InsufficientYieldFromConversion();
+    /// @dev Thrown when the requested mint exceeds the Alchemist borrow capacity.
+    error MintExceedsCapacity();
+    /// @dev Thrown when deposits are paused on the Alchemist.
+    error DepositsPaused();
+    /// @dev Thrown when a deposit would exceed the Alchemist deposit cap.
+    error DepositCapExceeded();
+    /// @dev Thrown when trying to create a position but the vault already holds one.
+    error PositionAlreadyExists();
+    /// @dev Thrown when a position NFT was not minted after deposit.
+    error PositionNotMinted();
+    /// @dev Thrown when an operation requires a position but none exists.
+    error NoPosition();
+    /// @dev Thrown when loans are paused on the Alchemist.
+    error LoansPaused();
+    /// @dev Thrown when the caller does not hold enough vault shares.
+    error InsufficientShares();
+    /// @dev Thrown when a withdrawal produces fewer underlying tokens than required.
+    error InsufficientWithdrawal();
+    /// @dev Thrown when the recipient address is address(0).
+    error InvalidRecipient();
+    /// @dev Thrown when trying to sweep the vault's active Alchemist position.
+    error CannotSweepActivePosition();
+    /// @dev Thrown when the vault does not own the specified position NFT.
+    error VaultNotOwner();
+    /// @dev Thrown when the vault holds more than one position NFT.
+    error MultiplePositions();
+    /// @dev Thrown when the vault is not the owner of its recorded position.
+    error NotPositionOwner();
+    /// @dev Thrown when the debt swap minimum is below the enforced slippage floor.
+    error SwapSlippageBelowMinimum();
+    /// @dev Thrown when a slippage parameter is >= 10000 basis points (100%).
+    error SlippageTooHigh();
+    /// @dev Thrown when emergencySweepToken is called with the underlying or yield token.
+    error CannotSweepVaultToken();
+    /// @dev Thrown when emergencySweepETH is called but the vault holds no ETH.
+    error NoETHToSweep();
+    /// @dev Thrown when an ETH transfer fails.
+    error ETHTransferFailed();
 
     // ============ Modifiers ============
 
+    /// @notice Restricts access to the configured leverager contract.
+    /// @dev Reverts with OnlyLeverager if msg.sender is not the leverager.
     modifier onlyLeverager() {
-        require(msg.sender == leverager, "Only leverager");
+        LeveragedVaultStorage storage $ = _getLeveragedVaultStorage();
+        if (msg.sender != $.leverager) revert OnlyLeverager();
         _;
     }
 
+    /// @notice Prevents concurrent deposit/leverage/withdraw operations.
+    /// @dev Sets a flag before execution and clears it after to block reentrancy at the operation level.
+    ///      Cannot use nonReentrant on entry-point functions because leverager callbacks
+    ///      (vaultDepositYieldTokens, etc.) already carry nonReentrant and share the same guard slot.
     modifier noConcurrentOperation() {
-        require(!_operationInProgress, "Operation in progress");
-        _operationInProgress = true;
+        LeveragedVaultStorage storage $ = _getLeveragedVaultStorage();
+        if ($.operationInProgress) revert OperationInProgress();
+        $.operationInProgress = true;
         _;
-        _operationInProgress = false;
+        $.operationInProgress = false;
     }
 
-    // ============ Constructor ============
+    // ============ Constructor (locks implementation) ============
 
-    constructor(
-        string memory tokenName,
-        string memory tokenDescription,
-        address yieldToken,
+    /// @custom:oz-upgrades-unsafe-allow constructor
+    constructor() {
+        _disableInitializers();
+    }
+
+    // ============ Initializer ============
+
+    /// @notice Initialize a new LeveragedVault clone with all required configuration.
+    /// @dev Called once by LeveragedVaultFactory immediately after cloning. Protected
+    ///      by the `initializer` modifier so it cannot be called again on the same proxy.
+    /// @param yieldToken_ Yield-bearing token deposited into Alchemist (e.g. wstETH).
+    /// @param underlyingTokenAddress Underlying token accepted for deposits (e.g. WETH).
+    /// @param _alchemist AlchemistV3 contract managing the CDP position.
+    /// @param _leverager Leverager contract authorized to execute leverage/deleverage.
+    /// @param _underlyingSlippageBasisPoints Default slippage tolerance for underlying operations.
+    /// @param _debtSlippageBasisPoints Default slippage tolerance for debt token swaps.
+    /// @param _converter Token converter for underlying <-> yield conversions.
+    /// @param _flashLoanAdapter Flash loan adapter for leverage/deleverage operations.
+    /// @param _swapper Swap adapter for debt token trades.
+    /// @param _weth WETH contract address for ETH wrapping.
+    /// @param initialOwner Address that will own this vault clone.
+    function initialize(
+        address yieldToken_,
         address underlyingTokenAddress,
         address _alchemist,
         address _leverager,
         uint32 _underlyingSlippageBasisPoints,
         uint32 _debtSlippageBasisPoints,
-        address _defaultConverter,
-        address _defaultFlashLoanAdapter,
-        address _defaultSwapper,
-        address _weth
-    ) payable
-        ERC4626(IERC20(underlyingTokenAddress))
-        ERC20(tokenDescription, tokenName)
-        Ownable(msg.sender)
-    {
-        require(_alchemist != address(0), "Alchemist cannot be zero");
-        require(_leverager != address(0), "Leverager cannot be zero");
-        require(yieldToken != address(0), "Yield token cannot be zero");
-        require(underlyingTokenAddress != address(0), "Underlying token cannot be zero");
-        require(_weth != address(0), "WETH cannot be zero");
-        require(_defaultConverter != address(0), "Converter cannot be zero");
-        require(_defaultFlashLoanAdapter != address(0), "Flash loan adapter cannot be zero");
-        require(_defaultSwapper != address(0), "Swapper cannot be zero");
-        alchemist = IAlchemistV3(_alchemist);
-        leverager = _leverager;
-        _underlyingToken = IERC20(underlyingTokenAddress);
-        _yieldToken = yieldToken;
-        underlyingSlippageBasisPoints = _underlyingSlippageBasisPoints;
-        debtSlippageBasisPoints = _debtSlippageBasisPoints;
-        defaultConverter = _defaultConverter;
-        defaultFlashLoanAdapter = _defaultFlashLoanAdapter;
-        defaultSwapper = _defaultSwapper;
-        wETH = IWETH(_weth);
+        address _converter,
+        address _flashLoanAdapter,
+        address _swapper,
+        address _weth,
+        address initialOwner
+    ) external initializer {
+        if (initialOwner == address(0)) revert ZeroAddress();
+        if (_alchemist == address(0)) revert ZeroAddress();
+        if (_leverager == address(0)) revert ZeroAddress();
+        if (yieldToken_ == address(0)) revert ZeroAddress();
+        if (underlyingTokenAddress == address(0)) revert ZeroAddress();
+        if (_weth == address(0)) revert ZeroAddress();
+        if (_converter == address(0)) revert ZeroAddress();
+        if (_flashLoanAdapter == address(0)) revert ZeroAddress();
+        if (_swapper == address(0)) revert ZeroAddress();
+
+        __Ownable_init(initialOwner);
+        string memory underlyingSymbol = IERC20Metadata(underlyingTokenAddress).symbol();
+        __ERC20_init(
+            string.concat("Logris Leveraged ", underlyingSymbol),
+            string.concat("lv", underlyingSymbol)
+        );
+        __ERC4626_init(IERC20(underlyingTokenAddress));
+        __ReentrancyGuard_init();
+        __Pausable_init();
+
+        if (_underlyingSlippageBasisPoints >= BASIS_POINTS) revert SlippageTooHigh();
+        if (_debtSlippageBasisPoints >= BASIS_POINTS) revert SlippageTooHigh();
+
+        LeveragedVaultStorage storage $ = _getLeveragedVaultStorage();
+        $.alchemist = IAlchemistV3(_alchemist);
+        $.leverager = _leverager;
+        $.underlyingToken = IERC20(underlyingTokenAddress);
+        $.yieldToken = yieldToken_;
+        $.underlyingSlippageBasisPoints = _underlyingSlippageBasisPoints;
+        $.debtSlippageBasisPoints = _debtSlippageBasisPoints;
+        $.converter = _converter;
+        $.flashLoanAdapter = _flashLoanAdapter;
+        $.swapper = _swapper;
+        $.wETH = IWETH(_weth);
+
+        emit VaultInitialized(yieldToken_, underlyingTokenAddress, _alchemist);
+    }
+
+    // ============ Public Getters (formerly public immutables) ============
+
+    /// @notice Returns the AlchemistV3 instance this vault interacts with.
+    /// @return The AlchemistV3 contract.
+    function alchemist() public view returns (IAlchemistV3) {
+        return _getLeveragedVaultStorage().alchemist;
+    }
+
+    /// @notice Returns the leverager contract authorized to execute leverage operations.
+    /// @return The leverager address.
+    function leverager() public view returns (address) {
+        return _getLeveragedVaultStorage().leverager;
+    }
+
+    /// @notice Returns the WETH contract used for ETH wrapping.
+    /// @return The WETH interface.
+    function wETH() public view returns (IWETH) {
+        return _getLeveragedVaultStorage().wETH;
+    }
+
+    /// @notice Returns the token converter used for underlying <-> yield conversions.
+    /// @return The converter address.
+    function converter() public view returns (address) {
+        return _getLeveragedVaultStorage().converter;
+    }
+
+    /// @notice Returns the flash loan adapter used for leverage/deleverage.
+    /// @return The flash loan adapter address.
+    function flashLoanAdapter() public view returns (address) {
+        return _getLeveragedVaultStorage().flashLoanAdapter;
+    }
+
+    /// @notice Returns the swap adapter used for debt token trades.
+    /// @return The swapper address.
+    function swapper() public view returns (address) {
+        return _getLeveragedVaultStorage().swapper;
+    }
+
+    /// @notice Returns the vault's AlchemistV3 position NFT ID.
+    /// @return The position ID, or 0 if no position exists.
+    function vaultPositionId() public view returns (uint256) {
+        return _getLeveragedVaultStorage().vaultPositionId;
+    }
+
+    /// @notice Returns the default slippage tolerance for underlying token operations.
+    /// @return Slippage in basis points.
+    function underlyingSlippageBasisPoints() public view returns (uint32) {
+        return _getLeveragedVaultStorage().underlyingSlippageBasisPoints;
+    }
+
+    /// @notice Returns the default slippage tolerance for debt token swaps.
+    /// @return Slippage in basis points.
+    function debtSlippageBasisPoints() public view returns (uint32) {
+        return _getLeveragedVaultStorage().debtSlippageBasisPoints;
     }
 
     // ============ View Functions ============
 
     /// @inheritdoc ILeveragedVault
     function getYieldToken() external view override(ILeveragedVault) returns (address) {
-        return _yieldToken;
+        return _getLeveragedVaultStorage().yieldToken;
     }
 
     /// @inheritdoc ILeveragedVault
     function getUnderlyingToken() external view override(ILeveragedVault) returns (address) {
-        return address(_underlyingToken);
+        LeveragedVaultStorage storage $ = _getLeveragedVaultStorage();
+        return address($.underlyingToken);
     }
 
     /// @inheritdoc ILeveragedVault
     function getDepositPoolBalance() external view override returns (uint256) {
-        return _underlyingToken.balanceOf(address(this));
+        LeveragedVaultStorage storage $ = _getLeveragedVaultStorage();
+        return $.underlyingToken.balanceOf(address(this));
     }
 
     /// @inheritdoc ILeveragedVault
     function getVaultDepositedBalance() external view override returns (uint256) {
-        if (vaultPositionId == 0) return 0;
-        (uint256 collateral, , ) = alchemist.getCDP(vaultPositionId);
+        LeveragedVaultStorage storage $ = _getLeveragedVaultStorage();
+        if ($.vaultPositionId == 0) return 0;
+        (uint256 collateral, , ) = $.alchemist.getCDP($.vaultPositionId);
         return collateral;
     }
 
     /// @inheritdoc ILeveragedVault
     function getVaultDebtBalance() external view override returns (int256) {
-        if (vaultPositionId == 0) return 0;
-        (, uint256 debt, ) = alchemist.getCDP(vaultPositionId);
+        LeveragedVaultStorage storage $ = _getLeveragedVaultStorage();
+        if ($.vaultPositionId == 0) return 0;
+        (, uint256 debt, ) = $.alchemist.getCDP($.vaultPositionId);
         return int256(debt);
     }
 
     /// @inheritdoc ILeveragedVault
     function getVaultRedeemableBalance() public view override returns (uint256) {
-        uint256 poolBalance = _underlyingToken.balanceOf(address(this));
-        if (vaultPositionId == 0) return poolBalance;
+        LeveragedVaultStorage storage $ = _getLeveragedVaultStorage();
+        uint256 poolBalance = $.underlyingToken.balanceOf(address(this));
+        if ($.vaultPositionId == 0) return poolBalance;
 
-        (uint256 collateral, uint256 debt, ) = alchemist.getCDP(vaultPositionId);
-        uint256 collateralUnderlying = alchemist.convertYieldTokensToUnderlying(collateral);
-        uint256 debtInUnderlying = alchemist.normalizeDebtTokensToUnderlying(debt);
+        (uint256 collateral, uint256 debt, uint256 earmarked) = $.alchemist.getCDP($.vaultPositionId);
+        uint256 freeCollateral = collateral - earmarked;
+        uint256 collateralUnderlying = $.alchemist.convertYieldTokensToUnderlying(freeCollateral);
+        uint256 debtInUnderlying = $.alchemist.normalizeDebtTokensToUnderlying(debt);
         uint256 alchemistBalance = collateralUnderlying > debtInUnderlying
             ? collateralUnderlying - debtInUnderlying
             : 0;
@@ -178,8 +372,9 @@ contract LeveragedVault is Ownable, ERC4626, ReentrancyGuard, Pausable, ILeverag
 
     /// @inheritdoc ILeveragedVault
     function getDepositCapacity() public view override returns (uint256) {
-        uint256 depositCap = alchemist.depositCap();
-        uint256 totalDeposited = alchemist.getTotalDeposited();
+        LeveragedVaultStorage storage $ = _getLeveragedVaultStorage();
+        uint256 depositCap = $.alchemist.depositCap();
+        uint256 totalDeposited = $.alchemist.getTotalDeposited();
         if (depositCap >= totalDeposited) {
             return depositCap - totalDeposited;
         }
@@ -188,22 +383,24 @@ contract LeveragedVault is Ownable, ERC4626, ReentrancyGuard, Pausable, ILeverag
 
     /// @inheritdoc ILeveragedVault
     function getBorrowCapacity() public view override returns (uint256) {
-        if (vaultPositionId == 0) return 0;
-        return alchemist.getMaxBorrowable(vaultPositionId);
+        LeveragedVaultStorage storage $ = _getLeveragedVaultStorage();
+        if ($.vaultPositionId == 0) return 0;
+        return $.alchemist.getMaxBorrowable($.vaultPositionId);
     }
 
     /// @inheritdoc ILeveragedVault
     function getFreeWithdrawCapacity() public view override returns (uint256) {
-        if (vaultPositionId == 0) return 0;
+        LeveragedVaultStorage storage $ = _getLeveragedVaultStorage();
+        if ($.vaultPositionId == 0) return 0;
 
-        uint256 minimumCollateralization = alchemist.minimumCollateralization();
-        (uint256 collateral, uint256 debt, ) = alchemist.getCDP(vaultPositionId);
+        uint256 minimumCollateralization = $.alchemist.minimumCollateralization();
+        (uint256 collateral, uint256 debt, uint256 earmarked) = $.alchemist.getCDP($.vaultPositionId);
+        uint256 freeCollateral = collateral - earmarked;
 
-        uint256 collateralUnderlying = alchemist.convertYieldTokensToUnderlying(collateral);
+        uint256 collateralUnderlying = $.alchemist.convertYieldTokensToUnderlying(freeCollateral);
         if (debt == 0) return collateralUnderlying;
 
-        // Calculate how much collateral is locked to back the debt
-        uint256 debtInUnderlying = alchemist.normalizeDebtTokensToUnderlying(debt);
+        uint256 debtInUnderlying = $.alchemist.normalizeDebtTokensToUnderlying(debt);
         uint256 lockedCollateral = debtInUnderlying * minimumCollateralization / FIXED_POINT_SCALAR;
 
         if (collateralUnderlying > lockedCollateral) {
@@ -214,36 +411,31 @@ contract LeveragedVault is Ownable, ERC4626, ReentrancyGuard, Pausable, ILeverag
 
     /// @inheritdoc ILeveragedVault
     function getTotalWithdrawCapacity() public view override returns (uint256) {
-        if (vaultPositionId == 0) return 0;
-        (uint256 collateral, , ) = alchemist.getCDP(vaultPositionId);
-        return alchemist.convertYieldTokensToUnderlying(collateral);
+        LeveragedVaultStorage storage $ = _getLeveragedVaultStorage();
+        if ($.vaultPositionId == 0) return 0;
+        (uint256 collateral, , uint256 earmarked) = $.alchemist.getCDP($.vaultPositionId);
+        uint256 freeCollateral = collateral - earmarked;
+        return $.alchemist.convertYieldTokensToUnderlying(freeCollateral);
     }
 
     /// @inheritdoc ILeveragedVault
     function convertUnderlyingTokensToShares(uint256 amount) public view override returns (uint256) {
-        uint256 supply = totalSupply();
-        if (supply == 0) return amount;
-        uint256 redeemable = getVaultRedeemableBalance();
-        if (redeemable == 0) return amount;
-        return amount * supply / redeemable;
+        return convertToShares(amount);
     }
 
     /// @inheritdoc ILeveragedVault
     function convertSharesToUnderlyingTokens(uint256 shares) public view override returns (uint256) {
-        uint256 supply = totalSupply();
-        if (supply == 0) return 0;
-        return shares * getVaultRedeemableBalance() / supply;
+        return convertToAssets(shares);
     }
 
     /// @inheritdoc ILeveragedVaultCallback
     function getVaultPositionId() external view override returns (uint256) {
-        return vaultPositionId;
+        return _getLeveragedVaultStorage().vaultPositionId;
     }
 
     // ============ Parameter Calculation Functions ============
 
-    /// @notice Calculate leverage parameters using vault's default slippage settings
-    /// @param depositAmount Amount of underlying tokens to leverage
+    /// @inheritdoc ILeveragedVault
     function getLeverageParameters(uint256 depositAmount)
         external view returns (
             uint256 clampedDeposit,
@@ -253,11 +445,11 @@ contract LeveragedVault is Ownable, ERC4626, ReentrancyGuard, Pausable, ILeverag
             uint256 debtTradeMin
         )
     {
-        return getLeverageParameters(depositAmount, underlyingSlippageBasisPoints, debtSlippageBasisPoints);
+        LeveragedVaultStorage storage $ = _getLeveragedVaultStorage();
+        return getLeverageParameters(depositAmount, $.underlyingSlippageBasisPoints, $.debtSlippageBasisPoints);
     }
 
-    /// @notice Calculate withdraw parameters using vault's default slippage settings
-    /// @param shares Amount of vault shares to withdraw
+    /// @inheritdoc ILeveragedVault
     function getWithdrawUnderlyingParameters(uint256 shares)
         external view returns (
             uint256 flashLoanAmount,
@@ -265,7 +457,8 @@ contract LeveragedVault is Ownable, ERC4626, ReentrancyGuard, Pausable, ILeverag
             uint256 minUnderlyingOut
         )
     {
-        return getWithdrawUnderlyingParameters(shares, underlyingSlippageBasisPoints, debtSlippageBasisPoints);
+        LeveragedVaultStorage storage $ = _getLeveragedVaultStorage();
+        return getWithdrawUnderlyingParameters(shares, $.underlyingSlippageBasisPoints, $.debtSlippageBasisPoints);
     }
 
     /// @inheritdoc ILeveragedVault
@@ -280,14 +473,13 @@ contract LeveragedVault is Ownable, ERC4626, ReentrancyGuard, Pausable, ILeverag
         uint256 mintAmount,
         uint256 debtTradeMin
     ) {
-        uint256 depositCapacity = getDepositCapacity(); // yield token units
-        uint256 expectedYieldFromDeposit = alchemist.convertUnderlyingTokensToYield(depositAmount);
+        LeveragedVaultStorage storage $ = _getLeveragedVaultStorage();
+        uint256 depositCapacity = getDepositCapacity();
+        uint256 expectedYieldFromDeposit = $.alchemist.convertUnderlyingTokensToYield(depositAmount);
 
         if (depositCapacity <= expectedYieldFromDeposit) {
-            // Vault is at or near capacity - just deposit what we can, no flash loan
-            clampedDeposit = alchemist.convertYieldTokensToUnderlying(depositCapacity);
+            clampedDeposit = $.alchemist.convertYieldTokensToUnderlying(depositCapacity);
             underlyingDepositMin = _basisPointAdjustment(depositCapacity, _underlyingSlippageBasisPoints);
-            // No flash loan, no mint, no trade
         } else {
             clampedDeposit = depositAmount;
             uint256 borrowCapacity = getBorrowCapacity();
@@ -297,34 +489,27 @@ contract LeveragedVault is Ownable, ERC4626, ReentrancyGuard, Pausable, ILeverag
                 _underlyingSlippageBasisPoints,
                 _debtSlippageBasisPoints,
                 borrowCapacity,
-                alchemist.minimumCollateralization()
+                $.alchemist.minimumCollateralization()
             );
-            if (flashLoanAmount > 0 && defaultFlashLoanAdapter.code.length > 0) {
-                uint256 fee = IFlashLoanAdapter(defaultFlashLoanAdapter).getFlashLoanFee(
-                    address(_underlyingToken),
-                    flashLoanAmount
-                );
-                flashLoanAmount += fee;
-            }
 
-            // Clamp flash loan to deposit capacity
-            uint256 expectedYieldFromTotal = alchemist.convertUnderlyingTokensToYield(depositAmount + flashLoanAmount);
+            // Note: flash loan fee is NOT pre-added here. The leverager handles fee
+            // repayment from the debt swap output during execution. Pre-adding the fee
+            // caused inconsistency when the deposit capacity check clamped flashLoanAmount.
+            uint256 expectedYieldFromTotal = $.alchemist.convertUnderlyingTokensToYield(depositAmount + flashLoanAmount);
             if (expectedYieldFromTotal > depositCapacity) {
-                uint256 maxUnderlying = alchemist.convertYieldTokensToUnderlying(depositCapacity);
+                uint256 maxUnderlying = $.alchemist.convertYieldTokensToUnderlying(depositCapacity);
                 flashLoanAmount = maxUnderlying > depositAmount ? maxUnderlying - depositAmount : 0;
                 expectedYieldFromTotal = depositCapacity;
             }
 
-            // Calculate expected yield tokens from total deposit
             underlyingDepositMin = _basisPointAdjustment(expectedYieldFromTotal, _underlyingSlippageBasisPoints);
 
-            // Calculate mint amount: existing borrow capacity + new capacity from deposit
-            // New capacity = deposit value / collateralization ratio
-            uint256 minUnderlyingValue = alchemist.convertYieldTokensToUnderlying(underlyingDepositMin);
-            uint256 newBorrowCapacity = minUnderlyingValue * FIXED_POINT_SCALAR / alchemist.minimumCollateralization();
+            // Convert yield → underlying → debt units so newBorrowCapacity matches borrowCapacity units
+            uint256 minUnderlyingValue = $.alchemist.convertYieldTokensToUnderlying(underlyingDepositMin);
+            uint256 minDebtValue = $.alchemist.normalizeUnderlyingTokensToDebt(minUnderlyingValue);
+            uint256 newBorrowCapacity = minDebtValue * FIXED_POINT_SCALAR / $.alchemist.minimumCollateralization();
             mintAmount = borrowCapacity + newBorrowCapacity;
 
-            // Calculate minimum underlying from debt swap
             debtTradeMin = _basisPointAdjustment(mintAmount, _debtSlippageBasisPoints);
         }
     }
@@ -339,49 +524,45 @@ contract LeveragedVault is Ownable, ERC4626, ReentrancyGuard, Pausable, ILeverag
         uint256 burnAmount,
         uint256 minUnderlyingOut
     ) {
-        uint256 freeUnderlying = getFreeWithdrawCapacity();
-        uint256 underlyingAmount = convertSharesToUnderlyingTokens(shares);
+        LeveragedVaultStorage storage $ = _getLeveragedVaultStorage();
+        uint256 underlyingAmount = convertToAssets(shares);
+        uint256 poolBalance = $.underlyingToken.balanceOf(address(this));
 
-        if (underlyingAmount <= freeUnderlying) {
-            // Simple withdrawal - no deleveraging needed
+        // Path 1: Pool has enough for direct transfer (matches _executeWithdraw path 1)
+        if (poolBalance >= underlyingAmount) {
+            minUnderlyingOut = underlyingAmount;
+            return (flashLoanAmount, burnAmount, minUnderlyingOut);
+        }
+
+        // Combine pool balance + free Alchemist collateral for total non-flash-loan capacity
+        uint256 availableUnderlying = getFreeWithdrawCapacity() + poolBalance;
+
+        if (underlyingAmount <= availableUnderlying) {
+            // Path 2: Pool + Alchemist withdrawal without deleveraging
             minUnderlyingOut = _basisPointAdjustment(underlyingAmount, _underlyingSlippageBasisPoints);
         } else {
-            // Need to deleverage to free up collateral
-            uint256 remainingUnderlying = underlyingAmount - freeUnderlying;
-            uint256 debtTradeLoss = _basisPointAdjustment(1 ether, _debtSlippageBasisPoints);
+            // Path 3: Flash loan needed for deleveraging
+            uint256 remainingUnderlying = underlyingAmount - availableUnderlying;
+            uint256 debtTradeLoss = _basisPointAdjustment(FIXED_POINT_SCALAR, _debtSlippageBasisPoints);
 
-            // Calculate flash loan needed to free remaining shares
-            // Flash loan → swap to debt → burn debt → withdraw collateral → repay flash loan
             flashLoanAmount = remainingUnderlying * FIXED_POINT_SCALAR * FIXED_POINT_SCALAR
-                / (alchemist.minimumCollateralization() * debtTradeLoss);
+                / ($.alchemist.minimumCollateralization() * debtTradeLoss);
 
             burnAmount = _basisPointAdjustment(flashLoanAmount, _debtSlippageBasisPoints);
             minUnderlyingOut = _basisPointAdjustment(
-                flashLoanAmount - burnAmount + freeUnderlying,
+                flashLoanAmount - burnAmount + availableUnderlying,
                 _underlyingSlippageBasisPoints
             );
         }
     }
 
-    /**
-     * @notice Calculate optimal flash loan amount for leverage
-     * @dev Formula derivation:
-     *      We want to maximize leverage while ensuring we can repay the flash loan.
-     *
-     *      Let:
-     *      - D = deposit amount
-     *      - X = flash loan amount
-     *      - CR = collateralization ratio (e.g., 1.11 for 111%)
-     *      - debtLoss = 1 - debtSlippage (what we get back per unit of debt swapped)
-     *      - totalLoss = debtLoss * (1 - underlyingSlippage)
-     *
-     *      After depositing (D + X), we can mint (D + X) / CR in debt.
-     *      Plus we have existing borrowCapacity.
-     *      We swap debt for underlying to repay X.
-     *
-     *      Solving for X where repay amount = flash loan amount:
-     *      X = ((totalLoss * D) + (CR * debtLoss * borrowCapacity)) / (CR - totalLoss)
-     */
+    /// @dev Computes the optimal flash loan size for a leverage operation.
+    /// @param depositAmount Amount of underlying tokens being deposited.
+    /// @param _underlyingSlippageBasisPoints Slippage tolerance for underlying operations.
+    /// @param _debtSlippageBasisPoints Slippage tolerance for debt token swaps.
+    /// @param borrowCapacity Current remaining borrow capacity on the position.
+    /// @param minimumCollateralization Alchemist minimum collateralization ratio (1e18 = 100%).
+    /// @return flashLoanAmount The recommended flash loan amount in underlying tokens.
     function _calculateFlashLoanAmount(
         uint256 depositAmount,
         uint32 _underlyingSlippageBasisPoints,
@@ -389,16 +570,12 @@ contract LeveragedVault is Ownable, ERC4626, ReentrancyGuard, Pausable, ILeverag
         uint256 borrowCapacity,
         uint256 minimumCollateralization
     ) internal pure returns (uint256 flashLoanAmount) {
-        // debtTradeLoss represents what fraction we keep after debt swap
-        uint256 debtTradeLoss = _basisPointAdjustment(1 ether, _debtSlippageBasisPoints);
-        // totalTradeLoss accounts for both underlying and debt slippage
+        uint256 debtTradeLoss = _basisPointAdjustment(FIXED_POINT_SCALAR, _debtSlippageBasisPoints);
         uint256 totalTradeLoss = _basisPointAdjustment(debtTradeLoss, _underlyingSlippageBasisPoints);
 
-        // Numerator: (totalTradeLoss * depositAmount) + (CR * debtTradeLoss * borrowCapacity / 1e18)
         uint256 numerator = (totalTradeLoss * depositAmount)
             + (minimumCollateralization * debtTradeLoss * borrowCapacity / FIXED_POINT_SCALAR);
 
-        // Denominator: CR - totalTradeLoss
         uint256 denominator = minimumCollateralization - totalTradeLoss;
 
         if (denominator == 0) return 0;
@@ -406,12 +583,7 @@ contract LeveragedVault is Ownable, ERC4626, ReentrancyGuard, Pausable, ILeverag
         flashLoanAmount = numerator / denominator;
     }
 
-    /**
-     * @notice Apply slippage reduction to an amount
-     * @param amount Original amount
-     * @param slippageBasisPoints Slippage in basis points (e.g., 100 = 1%)
-     * @return Reduced amount after slippage
-     */
+    /// @dev Applies a basis-point reduction to an amount: amount * (10000 - bps) / 10000.
     function _basisPointAdjustment(uint256 amount, uint32 slippageBasisPoints) internal pure returns (uint256) {
         return amount * (BASIS_POINTS - slippageBasisPoints) / BASIS_POINTS;
     }
@@ -419,30 +591,34 @@ contract LeveragedVault is Ownable, ERC4626, ReentrancyGuard, Pausable, ILeverag
     // ============ User Deposit Functions ============
 
     /// @inheritdoc ILeveragedVault
-    function depositUnderlying(uint256 amount) external override whenNotPaused returns (uint256 leveragedVaultShares) {
-        require(amount <= maxDeposit(msg.sender), "ERC4626: deposit more than max");
+    function depositUnderlying(uint256 amount) external override nonReentrant whenNotPaused noConcurrentOperation returns (uint256 leveragedVaultShares) {
+        LeveragedVaultStorage storage $ = _getLeveragedVaultStorage();
+        if (amount == 0) revert ZeroDeposit();
+        if (amount > maxDeposit(msg.sender)) revert DepositExceedsMax();
 
         leveragedVaultShares = previewDeposit(amount);
-        _underlyingToken.safeTransferFrom(msg.sender, address(this), amount);
+        $.underlyingToken.safeTransferFrom(msg.sender, address(this), amount);
         _mint(msg.sender, leveragedVaultShares);
         emit Deposit(msg.sender, msg.sender, amount, leveragedVaultShares);
-        emit DepositUnderlying(msg.sender, address(_underlyingToken), amount);
+        emit DepositUnderlying(msg.sender, address($.underlyingToken), amount);
     }
 
     /// @inheritdoc ILeveragedVault
-    function depositUnderlying() external payable override whenNotPaused returns (uint256 leveragedVaultShares) {
-        require(msg.value <= maxDeposit(msg.sender), "ERC4626: deposit more than max");
-        require(address(_underlyingToken) == address(wETH), "ERC4626: depositing ETH to non-wETH vault");
-        // Calculate shares BEFORE wrapping ETH, so totalAssets() doesn't include this deposit yet
+    function depositUnderlying() external payable override nonReentrant whenNotPaused noConcurrentOperation returns (uint256 leveragedVaultShares) {
+        LeveragedVaultStorage storage $ = _getLeveragedVaultStorage();
+        if (msg.value == 0) revert ZeroDeposit();
+        if (msg.value > maxDeposit(msg.sender)) revert DepositExceedsMax();
+        if (address($.underlyingToken) != address($.wETH)) revert NonWETHVault();
         leveragedVaultShares = previewDeposit(msg.value);
-        wETH.deposit{value: msg.value}();
+        $.wETH.deposit{value: msg.value}();
         _depositETH(msg.sender, msg.sender, msg.value, leveragedVaultShares);
-        emit DepositUnderlying(msg.sender, address(_underlyingToken), msg.value);
+        emit DepositUnderlying(msg.sender, address($.underlyingToken), msg.value);
     }
 
     // ============ Leverage Functions ============
 
     /// @inheritdoc ILeveragedVault
+    /// @dev No access control — see ILeveragedVault for security implications.
     function leverage(
         uint256 clampedDeposit,
         uint256 flashLoanAmount,
@@ -453,6 +629,7 @@ contract LeveragedVault is Ownable, ERC4626, ReentrancyGuard, Pausable, ILeverag
         _executeLeverage(clampedDeposit, flashLoanAmount, underlyingDepositMin, mintAmount, debtTradeMin);
     }
 
+    /// @dev Core leverage logic shared by leverage() and leverageAtomic().
     function _executeLeverage(
         uint256 clampedDeposit,
         uint256 flashLoanAmount,
@@ -460,47 +637,45 @@ contract LeveragedVault is Ownable, ERC4626, ReentrancyGuard, Pausable, ILeverag
         uint256 mintAmount,
         uint256 debtTradeMin
     ) internal {
-        uint256 poolBalance = _underlyingToken.balanceOf(address(this));
-        require(clampedDeposit <= poolBalance, "Insufficient pool balance");
-        require(clampedDeposit > 0, "Must deposit something");
+        LeveragedVaultStorage storage $ = _getLeveragedVaultStorage();
+        uint256 poolBalance = $.underlyingToken.balanceOf(address(this));
+        if (clampedDeposit > poolBalance) revert InsufficientPoolBalance();
+        if (clampedDeposit == 0) revert ZeroDeposit();
 
-        // Enforce minimum slippage protection on debt swap (sandwich attack vector)
         _enforceMinimumSlippage(mintAmount, debtTradeMin);
 
         int256 debtBefore = int256(_getVaultDebt());
 
-        // Convert underlying → yield tokens using the converter
-        _underlyingToken.forceApprove(defaultConverter, clampedDeposit);
+        $.underlyingToken.forceApprove($.converter, clampedDeposit);
         uint256 minYieldFromDeposit = flashLoanAmount == 0 ? underlyingDepositMin : 0;
-        uint256 yieldTokensReceived = ITokenConverter(defaultConverter).toYield(
+        uint256 yieldTokensReceived = ITokenConverter($.converter).toYield(
             clampedDeposit,
             address(this),
             minYieldFromDeposit
         );
         if (minYieldFromDeposit > 0) {
-            require(yieldTokensReceived >= minYieldFromDeposit, "Insufficient yield tokens from conversion");
+            if (yieldTokensReceived < minYieldFromDeposit) revert InsufficientYieldFromConversion();
         }
 
-        uint256 minCollateralization = alchemist.minimumCollateralization();
-        uint256 minUnderlyingValue = alchemist.convertYieldTokensToUnderlying(underlyingDepositMin);
-        uint256 newBorrowCapacity = minUnderlyingValue * FIXED_POINT_SCALAR / minCollateralization;
+        uint256 minCollateralization = $.alchemist.minimumCollateralization();
+        // Convert yield → underlying → debt units so newBorrowCapacity matches borrowCapacity units
+        uint256 minUnderlyingValue = $.alchemist.convertYieldTokensToUnderlying(underlyingDepositMin);
+        uint256 minDebtValue = $.alchemist.normalizeUnderlyingTokensToDebt(minUnderlyingValue);
+        uint256 newBorrowCapacity = minDebtValue * FIXED_POINT_SCALAR / minCollateralization;
         uint256 borrowCapacity = getBorrowCapacity();
-        require(mintAmount <= borrowCapacity + newBorrowCapacity, "Mint exceeds capacity");
+        if (mintAmount > borrowCapacity + newBorrowCapacity) revert MintExceedsCapacity();
 
-        // Approve leverager to pull yield tokens
-        IERC20(_yieldToken).forceApprove(leverager, yieldTokensReceived);
+        IERC20($.yieldToken).forceApprove($.leverager, yieldTokensReceived);
 
-        // Approve leverager to mint debt from our position (if position exists)
-        if (vaultPositionId > 0) {
-            alchemist.approveMint(vaultPositionId, leverager, mintAmount);
+        if ($.vaultPositionId > 0) {
+            $.alchemist.approveMint($.vaultPositionId, $.leverager, mintAmount);
         }
 
-        // Construct V3 leverage params
         ILeveragerV3.LeverageParams memory params = ILeveragerV3.LeverageParams({
             vault: address(this),
-            converter: defaultConverter,
-            flashLoanAdapter: defaultFlashLoanAdapter,
-            swapper: defaultSwapper,
+            converter: $.converter,
+            flashLoanAdapter: $.flashLoanAdapter,
+            swapper: $.swapper,
             depositAmount: yieldTokensReceived,
             flashLoanAmount: flashLoanAmount,
             mintAmount: mintAmount,
@@ -508,11 +683,10 @@ contract LeveragedVault is Ownable, ERC4626, ReentrancyGuard, Pausable, ILeverag
             minYieldOut: underlyingDepositMin
         });
 
-        // Call V3 leverager
-        ILeveragerV3(leverager).leverage(params);
+        ILeveragerV3($.leverager).leverage(params);
 
         int256 debtAfter = int256(_getVaultDebt());
-        emit Leverage(_yieldToken, clampedDeposit + flashLoanAmount, debtAfter - debtBefore);
+        emit Leverage($.yieldToken, clampedDeposit + flashLoanAmount, debtAfter - debtBefore);
         emit VaultLeveraged(clampedDeposit, flashLoanAmount, mintAmount);
     }
 
@@ -537,26 +711,25 @@ contract LeveragedVault is Ownable, ERC4626, ReentrancyGuard, Pausable, ILeverag
 
     /// @inheritdoc ILeveragedVaultCallback
     function vaultDepositYieldTokens(uint256 amount) external override nonReentrant onlyLeverager returns (uint256) {
-        require(!alchemist.depositsPaused(), "Deposits paused");
+        LeveragedVaultStorage storage $ = _getLeveragedVaultStorage();
+        if ($.alchemist.depositsPaused()) revert DepositsPaused();
         uint256 capacity = getDepositCapacity();
-        require(amount <= capacity, "Deposit cap exceeded");
-        IERC20 yieldToken = IERC20(_yieldToken);
-        yieldToken.safeTransferFrom(msg.sender, address(this), amount);
-        yieldToken.forceApprove(address(alchemist), amount);
-        IAlchemistV3Position positionNFT = IAlchemistV3Position(alchemist.alchemistPositionNFT());
+        if (amount > capacity) revert DepositCapExceeded();
+        IERC20 yieldToken_ = IERC20($.yieldToken);
+        yieldToken_.safeTransferFrom(msg.sender, address(this), amount);
+        yieldToken_.forceApprove(address($.alchemist), amount);
+        IAlchemistV3Position positionNFT = IAlchemistV3Position($.alchemist.alchemistPositionNFT());
 
-        if (vaultPositionId == 0) {
-            require(positionNFT.balanceOf(address(this)) == 0, "Position already exists");
-            // Create new position via AlchemistV3 (mints the NFT internally)
-            alchemist.deposit(amount, address(this), 0);
+        if ($.vaultPositionId == 0) {
+            if (positionNFT.balanceOf(address(this)) != 0) revert PositionAlreadyExists();
+            $.alchemist.deposit(amount, address(this), 0);
             uint256 balance = positionNFT.balanceOf(address(this));
-            require(balance == 1, "Position not minted");
-            vaultPositionId = positionNFT.tokenOfOwnerByIndex(address(this), 0);
-            emit VaultPositionCreated(vaultPositionId);
+            if (balance != 1) revert PositionNotMinted();
+            $.vaultPositionId = positionNFT.tokenOfOwnerByIndex(address(this), 0);
+            emit VaultPositionCreated($.vaultPositionId);
         } else {
             _requireSinglePosition(positionNFT);
-            // Deposit to existing position
-            alchemist.deposit(amount, address(this), vaultPositionId);
+            $.alchemist.deposit(amount, address(this), $.vaultPositionId);
         }
 
         return amount;
@@ -564,34 +737,42 @@ contract LeveragedVault is Ownable, ERC4626, ReentrancyGuard, Pausable, ILeverag
 
     /// @inheritdoc ILeveragedVaultCallback
     function vaultMintDebtTokens(uint256 amount, address recipient) external override nonReentrant onlyLeverager {
-        require(vaultPositionId > 0, "No position");
-        require(!alchemist.loansPaused(), "Loans paused");
-        IAlchemistV3Position positionNFT = IAlchemistV3Position(alchemist.alchemistPositionNFT());
+        LeveragedVaultStorage storage $ = _getLeveragedVaultStorage();
+        if ($.vaultPositionId == 0) revert NoPosition();
+        if ($.alchemist.loansPaused()) revert LoansPaused();
+        IAlchemistV3Position positionNFT = IAlchemistV3Position($.alchemist.alchemistPositionNFT());
         _requireSinglePosition(positionNFT);
-        require(amount <= alchemist.getMaxBorrowable(vaultPositionId), "Mint exceeds capacity");
-        alchemist.mint(vaultPositionId, amount, recipient);
+        if (amount > $.alchemist.getMaxBorrowable($.vaultPositionId)) revert MintExceedsCapacity();
+        $.alchemist.mint($.vaultPositionId, amount, recipient);
+        emit VaultDebtMinted(amount, recipient);
     }
 
     /// @inheritdoc ILeveragedVaultCallback
     function vaultWithdrawYieldTokens(uint256 amount, address recipient) external override nonReentrant onlyLeverager returns (uint256) {
-        require(vaultPositionId > 0, "No position");
-        IAlchemistV3Position positionNFT = IAlchemistV3Position(alchemist.alchemistPositionNFT());
+        LeveragedVaultStorage storage $ = _getLeveragedVaultStorage();
+        if ($.vaultPositionId == 0) revert NoPosition();
+        IAlchemistV3Position positionNFT = IAlchemistV3Position($.alchemist.alchemistPositionNFT());
         _requireSinglePosition(positionNFT);
-        return alchemist.withdraw(amount, recipient, vaultPositionId);
+        uint256 withdrawn = $.alchemist.withdraw(amount, recipient, $.vaultPositionId);
+        emit VaultYieldWithdrawn(withdrawn, recipient);
+        return withdrawn;
     }
 
     /// @inheritdoc ILeveragedVaultCallback
     function vaultBurnDebtTokens(uint256 amount) external override nonReentrant onlyLeverager {
-        require(vaultPositionId > 0, "No position");
-        address debtToken = alchemist.debtToken();
+        LeveragedVaultStorage storage $ = _getLeveragedVaultStorage();
+        if ($.vaultPositionId == 0) revert NoPosition();
+        address debtToken = $.alchemist.debtToken();
         IERC20(debtToken).safeTransferFrom(msg.sender, address(this), amount);
-        IERC20(debtToken).forceApprove(address(alchemist), amount);
-        alchemist.burn(amount, vaultPositionId);
+        IERC20(debtToken).forceApprove(address($.alchemist), amount);
+        $.alchemist.burn(amount, $.vaultPositionId);
+        emit VaultDebtBurned(amount);
     }
 
     // ============ Withdraw Functions ============
 
     /// @inheritdoc ILeveragedVault
+    /// @dev Intentionally NOT gated by whenNotPaused so users can always exit.
     function withdrawUnderlying(
         uint256 shares,
         uint256 flashLoanAmount,
@@ -601,83 +782,112 @@ contract LeveragedVault is Ownable, ERC4626, ReentrancyGuard, Pausable, ILeverag
         return _executeWithdraw(shares, flashLoanAmount, burnAmount, minUnderlyingOut);
     }
 
+    /// @dev Core withdrawal logic shared by withdrawUnderlying() and withdrawUnderlyingAtomic().
     function _executeWithdraw(
         uint256 shares,
         uint256 flashLoanAmount,
         uint256 burnAmount,
         uint256 minUnderlyingOut
     ) internal returns (uint256 underlyingWithdrawAmount) {
-        require(shares <= balanceOf(msg.sender), "Insufficient shares");
+        LeveragedVaultStorage storage $ = _getLeveragedVaultStorage();
+        if (shares > balanceOf(msg.sender)) revert InsufficientShares();
 
-        underlyingWithdrawAmount = convertSharesToUnderlyingTokens(shares);
-        uint256 poolBalance = _underlyingToken.balanceOf(address(this));
+        underlyingWithdrawAmount = convertToAssets(shares);
+        uint256 poolBalance = $.underlyingToken.balanceOf(address(this));
 
+        // Path 1: Pool has enough for direct transfer
         if (poolBalance >= underlyingWithdrawAmount) {
-            // Simple case: pool has enough unleveraged funds
             _burn(msg.sender, shares);
-            _underlyingToken.safeTransfer(msg.sender, underlyingWithdrawAmount);
+            $.underlyingToken.safeTransfer(msg.sender, underlyingWithdrawAmount);
+        // Path 2: Pool + Alchemist withdrawal without deleveraging
         } else if (burnAmount == 0) {
-            // Need to withdraw from Alchemist but no debt to burn (free collateral)
             uint256 neededFromAlchemist = underlyingWithdrawAmount - poolBalance;
-            require(vaultPositionId > 0, "No position to withdraw from");
-            _requireSinglePosition(IAlchemistV3Position(alchemist.alchemistPositionNFT()));
+            if ($.vaultPositionId == 0) revert NoPosition();
+            _requireSinglePosition(IAlchemistV3Position($.alchemist.alchemistPositionNFT()));
 
-            uint256 yieldToWithdraw = alchemist.convertUnderlyingTokensToYield(neededFromAlchemist);
-            uint256 withdrawn = alchemist.withdraw(yieldToWithdraw, address(this), vaultPositionId);
-            IERC20(_yieldToken).forceApprove(defaultConverter, withdrawn);
+            uint256 yieldToWithdraw = $.alchemist.convertUnderlyingTokensToYield(neededFromAlchemist);
+            uint256 withdrawn = $.alchemist.withdraw(yieldToWithdraw, address(this), $.vaultPositionId);
+            IERC20($.yieldToken).forceApprove($.converter, withdrawn);
             uint256 minOutForConverter = minUnderlyingOut > poolBalance
                 ? minUnderlyingOut - poolBalance
                 : 0;
-            uint256 underlyingReceived = ITokenConverter(defaultConverter).toUnderlying(
+            uint256 underlyingReceived = ITokenConverter($.converter).toUnderlying(
                 withdrawn,
                 address(this),
                 minOutForConverter
             );
             uint256 totalUnderlyingOut = poolBalance + underlyingReceived;
-            require(totalUnderlyingOut >= minUnderlyingOut, "Insufficient withdrawal");
-            require(totalUnderlyingOut >= underlyingWithdrawAmount, "Insufficient withdrawal");
+            if (totalUnderlyingOut < minUnderlyingOut) revert InsufficientWithdrawal();
+            if (totalUnderlyingOut < underlyingWithdrawAmount) revert InsufficientWithdrawal();
 
             _burn(msg.sender, shares);
-            _underlyingToken.safeTransfer(msg.sender, underlyingWithdrawAmount);
+            $.underlyingToken.safeTransfer(msg.sender, underlyingWithdrawAmount);
+        // Path 3: Flash loan deleverage
         } else {
-            // Need to deleverage: flash loan → swap to debt → burn → withdraw → repay
-            require(vaultPositionId > 0, "No position");
-            _requireSinglePosition(IAlchemistV3Position(alchemist.alchemistPositionNFT()));
+            if ($.vaultPositionId == 0) revert NoPosition();
+            _requireSinglePosition(IAlchemistV3Position($.alchemist.alchemistPositionNFT()));
 
-            // Construct V3 deleverage params
+            // S-02 fix: Only withdraw from Alchemist the portion not covered by pool balance.
+            uint256 alchemistUnderlying = underlyingWithdrawAmount > poolBalance
+                ? underlyingWithdrawAmount - poolBalance
+                : 0;
+
             ILeveragerV3.DeleverageParams memory params = ILeveragerV3.DeleverageParams({
                 vault: address(this),
-                converter: defaultConverter,
-                flashLoanAdapter: defaultFlashLoanAdapter,
-                swapper: defaultSwapper,
+                converter: $.converter,
+                flashLoanAdapter: $.flashLoanAdapter,
+                swapper: $.swapper,
                 recipient: msg.sender,
-                withdrawAmount: alchemist.convertUnderlyingTokensToYield(underlyingWithdrawAmount),
+                withdrawAmount: $.alchemist.convertUnderlyingTokensToYield(alchemistUnderlying),
                 flashLoanAmount: flashLoanAmount,
                 burnAmount: burnAmount,
                 minOutput: minUnderlyingOut
             });
 
-            // Call V3 leverager
-            ILeveragerV3(leverager).deleverage(params);
-
+            // S-03 fix: Burn shares before external calls (checks-effects-interactions).
             _burn(msg.sender, shares);
-            // Leverager sends underlying directly to user
+
+            // H-2: Capture user balance BEFORE any transfers so the check covers
+            // both pool portion and leverager delivery (minUnderlyingOut includes both).
+            uint256 userBalBefore = $.underlyingToken.balanceOf(msg.sender);
+
+            // Transfer pool portion to user before deleverage handles the rest.
+            if (poolBalance > 0) {
+                $.underlyingToken.safeTransfer(msg.sender, poolBalance);
+            }
+
+            ILeveragerV3($.leverager).deleverage(params);
+
+            if (minUnderlyingOut > 0) {
+                uint256 received = $.underlyingToken.balanceOf(msg.sender) - userBalBefore;
+                if (received < minUnderlyingOut) revert InsufficientWithdrawal();
+            }
         }
 
-        emit WithdrawUnderlying(msg.sender, address(_underlyingToken), shares);
-        emit VaultDeleveraged(shares, burnAmount);
+        emit WithdrawUnderlying(msg.sender, address($.underlyingToken), shares);
+        if (burnAmount > 0) {
+            emit VaultDeleveraged(shares, burnAmount);
+        }
     }
 
+    /// @notice Transfers an unexpected Alchemist position NFT out of the vault.
+    /// @dev Only positions other than the vault's active position can be swept.
+    ///      Reverts if `tokenId` matches the active position or if the vault doesn't own it.
+    /// @param tokenId The Alchemist position NFT ID to transfer out.
+    /// @param to The recipient address.
     function sweepUnknownPosition(uint256 tokenId, address to) external onlyOwner {
-        require(to != address(0), "Invalid recipient");
-        require(vaultPositionId != 0, "No stored position");
-        require(tokenId != vaultPositionId, "Cannot sweep active position");
-        IAlchemistV3Position positionNFT = IAlchemistV3Position(alchemist.alchemistPositionNFT());
-        require(positionNFT.ownerOf(tokenId) == address(this), "Vault not owner");
+        LeveragedVaultStorage storage $ = _getLeveragedVaultStorage();
+        if (to == address(0)) revert InvalidRecipient();
+        // S-04 fix: Allow sweeping when vaultPositionId == 0 to recover griefed positions.
+        if ($.vaultPositionId != 0 && tokenId == $.vaultPositionId) revert CannotSweepActivePosition();
+        IAlchemistV3Position positionNFT = IAlchemistV3Position($.alchemist.alchemistPositionNFT());
+        if (positionNFT.ownerOf(tokenId) != address(this)) revert VaultNotOwner();
         positionNFT.transferFrom(address(this), to, tokenId);
+        emit PositionSwept(tokenId, to);
     }
 
     /// @inheritdoc ILeveragedVault
+    /// @dev Intentionally NOT gated by whenNotPaused so users can always exit.
     function withdrawUnderlyingAtomic(
         uint256 shares,
         uint32 _underlyingSlippageBasisPoints,
@@ -694,80 +904,108 @@ contract LeveragedVault is Ownable, ERC4626, ReentrancyGuard, Pausable, ILeverag
 
     // ============ Internal Helpers ============
 
+    /// @dev Returns the vault's current debt from its Alchemist position, or 0 if no position.
     function _getVaultDebt() internal view returns (uint256) {
-        if (vaultPositionId == 0) return 0;
-        (, uint256 debt, ) = alchemist.getCDP(vaultPositionId);
+        LeveragedVaultStorage storage $ = _getLeveragedVaultStorage();
+        if ($.vaultPositionId == 0) return 0;
+        (, uint256 debt, ) = $.alchemist.getCDP($.vaultPositionId);
         return debt;
     }
 
+    /// @dev Asserts the vault holds exactly one position NFT and owns the recorded position.
     function _requireSinglePosition(IAlchemistV3Position positionNFT) internal view {
-        require(positionNFT.balanceOf(address(this)) == 1, "Multiple positions");
-        require(positionNFT.ownerOf(vaultPositionId) == address(this), "Not position owner");
+        LeveragedVaultStorage storage $ = _getLeveragedVaultStorage();
+        if (positionNFT.balanceOf(address(this)) != 1) revert MultiplePositions();
+        if (positionNFT.ownerOf($.vaultPositionId) != address(this)) revert NotPositionOwner();
     }
 
     // ============ ERC4626 Overrides ============
 
-    function totalAssets() public view virtual override(ERC4626, IERC4626) returns (uint256) {
+    /// @inheritdoc ERC4626Upgradeable
+    /// @dev totalAssets() reads the Alchemist's convertYieldTokensToUnderlying(), which depends
+    ///      on the yield token adapter's price feed. For wstETH this is Lido's stEthPerToken()
+    ///      (~$20B TVL, manipulation-infeasible). Future yield token integrations MUST use a
+    ///      manipulation-resistant price source — AMM spot prices are NOT safe here, as a
+    ///      flash-loan price manipulation would directly affect share price during deposits
+    ///      and withdrawals.
+    function totalAssets() public view virtual override(ERC4626Upgradeable, IERC4626) returns (uint256) {
         return getVaultRedeemableBalance();
+    }
+
+    /// @dev Virtual share offset for ERC4626 inflation attack protection.
+    /// A value of 3 creates 10^3 = 1000 virtual shares, requiring an attacker to
+    /// donate ~1000x the victim's deposit to execute an inflation attack (economically infeasible).
+    function _decimalsOffset() internal view virtual override returns (uint8) {
+        return 3;
     }
 
     // ============ ETH Handling ============
 
-    /// @notice Allow vault to receive ETH (needed for WETH unwrapping and converter operations)
+    /// @dev Allows the vault to receive ETH (e.g. during WETH unwrapping in flash loan repayment).
     receive() external payable {}
 
     // ============ Slippage Enforcement ============
 
-    /// @notice Enforce minimum slippage protection on the debt swap
-    /// @dev The debt swap (alETH → WETH via Curve) is the primary sandwich attack vector.
-    ///      Deposit-side conversion (WETH → wstETH via Lido) is not price-manipulable,
-    ///      so we only enforce minimums on the debt swap.
-    ///
-    ///      We use 2x the vault's debtSlippageBasisPoints as the floor because
-    ///      debtSlippageBasisPoints includes both peg deviation (~2-3%) and trade slippage (~1%).
-    ///      The floor must accommodate the peg deviation gap between mintAmount (in debt tokens)
-    ///      and debtTradeMin (in underlying tokens).
+    /// @dev Ensures the debt swap minimum is not unreasonably low relative to the vault's configured slippage.
+    ///      When debtSlippageBasisPoints == 0, enforces debtTradeMin >= mintAmount (zero tolerance).
     function _enforceMinimumSlippage(uint256 mintAmount, uint256 debtTradeMin) internal view {
-        if (debtSlippageBasisPoints > 0 && mintAmount > 0) {
-            // Use 2x the configured slippage as the enforcement floor
-            uint256 enforcementBps = uint256(debtSlippageBasisPoints) * 2;
+        LeveragedVaultStorage storage $ = _getLeveragedVaultStorage();
+        if (mintAmount > 0) {
+            uint256 enforcementBps = uint256($.debtSlippageBasisPoints);
             if (enforcementBps >= BASIS_POINTS) enforcementBps = BASIS_POINTS - 1;
             uint256 minAcceptableSwap = mintAmount * (BASIS_POINTS - enforcementBps) / BASIS_POINTS;
-            require(debtTradeMin >= minAcceptableSwap, "Swap slippage below vault minimum");
+            if (debtTradeMin < minAcceptableSwap) revert SwapSlippageBelowMinimum();
         }
     }
 
     // ============ Admin Functions ============
 
+    /// @notice Pauses deposits and leverage operations. Withdrawals remain available.
     function pause() external onlyOwner {
         _pause();
     }
 
+    /// @notice Resumes deposits and leverage operations.
     function unpause() external onlyOwner {
         _unpause();
     }
 
-    /// @notice Set default slippage parameters
-    /// @param _underlyingSlippageBasisPoints Slippage for underlying operations (e.g. 100 = 1%)
-    /// @param _debtSlippageBasisPoints Slippage for debt swaps, includes peg deviation (e.g. 300 = 3%)
+    /// @notice Updates the vault's default slippage parameters.
+    /// @param _underlyingSlippageBasisPoints New slippage for underlying token operations (< 10000).
+    /// @param _debtSlippageBasisPoints New slippage for debt token swaps (< 10000).
     function setSlippageParameters(
         uint32 _underlyingSlippageBasisPoints,
         uint32 _debtSlippageBasisPoints
     ) external onlyOwner {
-        require(_underlyingSlippageBasisPoints < 10000, "Underlying slippage too high");
-        require(_debtSlippageBasisPoints < 10000, "Debt slippage too high");
-        underlyingSlippageBasisPoints = _underlyingSlippageBasisPoints;
-        debtSlippageBasisPoints = _debtSlippageBasisPoints;
+        if (_underlyingSlippageBasisPoints >= BASIS_POINTS) revert SlippageTooHigh();
+        if (_debtSlippageBasisPoints >= BASIS_POINTS) revert SlippageTooHigh();
+        LeveragedVaultStorage storage $ = _getLeveragedVaultStorage();
+        $.underlyingSlippageBasisPoints = _underlyingSlippageBasisPoints;
+        $.debtSlippageBasisPoints = _debtSlippageBasisPoints;
         emit SlippageParametersUpdated(_underlyingSlippageBasisPoints, _debtSlippageBasisPoints);
     }
 
-    /// @notice Emergency withdraw stuck ERC20 tokens (not underlying or yield tokens in active use)
-    /// @dev Only callable by owner. Safeguard against tokens stuck from failed operations.
-    /// @param token Token address to sweep
-    /// @param amount Amount to sweep
-    /// @param recipient Address to receive swept tokens
+    /// @notice Transfers accidentally-sent ERC20 tokens out of the vault.
+    /// @dev Cannot sweep the vault's underlying or yield token to prevent rug pulls.
+    /// @param token The ERC20 token address to sweep.
+    /// @param amount The amount to transfer.
+    /// @param recipient The address to receive the tokens.
     function emergencySweepToken(address token, uint256 amount, address recipient) external onlyOwner {
-        require(recipient != address(0), "Invalid recipient");
+        if (recipient == address(0)) revert InvalidRecipient();
+        LeveragedVaultStorage storage $ = _getLeveragedVaultStorage();
+        if (token == address($.underlyingToken) || token == $.yieldToken) revert CannotSweepVaultToken();
         IERC20(token).safeTransfer(recipient, amount);
+        emit EmergencySweep(token, amount, recipient);
+    }
+
+    /// @notice Transfers ETH stuck in the vault (e.g. from selfdestruct or coinbase) to a recipient.
+    /// @param recipient The address to receive the ETH.
+    function emergencySweepETH(address payable recipient) external onlyOwner {
+        if (recipient == address(0)) revert InvalidRecipient();
+        uint256 balance = address(this).balance;
+        if (balance == 0) revert NoETHToSweep();
+        (bool success,) = recipient.call{value: balance}("");
+        if (!success) revert ETHTransferFailed();
+        emit EmergencySweepETH(balance, recipient);
     }
 }
