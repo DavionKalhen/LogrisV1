@@ -72,6 +72,7 @@ contract V3Leverager is ILeveragerV3, IFlashLoanCallback, Ownable, ReentrancyGua
     error SlippageExceeded();
     error UnsupportedFlashLoanToken();
     error InvalidConverterTokens();
+    error FlashLoanRequired();
 
     // ============ Constructor ============
 
@@ -79,6 +80,11 @@ contract V3Leverager is ILeveragerV3, IFlashLoanCallback, Ownable, ReentrancyGua
 
     // ============ Leverage ============
 
+    /// @notice Execute a leverage operation using a flash loan and the vault's Alchemist position.
+    /// @dev Pulls yield tokens from the caller, optionally flash-loans underlying, converts to yield,
+    ///      deposits into the vault's position, mints debt, swaps debt to underlying, repays flash loan,
+    ///      and returns surplus to the caller.
+    /// @param params Struct containing vault, adapter addresses, amounts, and slippage limits.
     function leverage(LeverageParams calldata params) external nonReentrant {
         // Validate state
         if (_state != FlashLoanState.Idle) revert FlashLoanInProgress();
@@ -140,6 +146,10 @@ contract V3Leverager is ILeveragerV3, IFlashLoanCallback, Ownable, ReentrancyGua
 
     // ============ Deleverage ============
 
+    /// @notice Execute a deleverage operation: flash-loan underlying, swap to debt, burn debt,
+    ///         withdraw collateral, convert to underlying, repay flash loan, send surplus underlying
+    ///         and any excess debt tokens to recipient.
+    /// @param params Struct containing vault, adapter addresses, amounts, and slippage limits.
     function deleverage(DeleverageParams calldata params) external nonReentrant {
         // Validate state
         if (_state != FlashLoanState.Idle) revert FlashLoanInProgress();
@@ -150,7 +160,7 @@ contract V3Leverager is ILeveragerV3, IFlashLoanCallback, Ownable, ReentrancyGua
         if (!_approvedSwappers[params.swapper]) revert UnapprovedSwapper();
 
         // Deleverage always requires a flash loan (to swap to debt tokens for burning)
-        require(params.flashLoanAmount > 0, "Flash loan required for deleverage");
+        if (params.flashLoanAmount == 0) revert FlashLoanRequired();
 
         ITokenConverter converter = ITokenConverter(params.converter);
         address underlyingToken = converter.underlyingToken();
@@ -193,6 +203,13 @@ contract V3Leverager is ILeveragerV3, IFlashLoanCallback, Ownable, ReentrancyGua
 
     // ============ Flash Loan Callback ============
 
+    /// @notice Callback invoked by the flash loan adapter after funds are received.
+    /// @dev Routes to leverage or deleverage handler based on the current state machine state.
+    /// @param initiator The address that initiated the flash loan (must be this contract).
+    /// @param token The flash-loaned token address.
+    /// @param amount The flash-loaned amount.
+    /// @param fee The flash loan fee to repay.
+    /// @return True if the callback executed successfully.
     function onFlashLoanReceived(
         address initiator,
         address token,
@@ -214,6 +231,7 @@ contract V3Leverager is ILeveragerV3, IFlashLoanCallback, Ownable, ReentrancyGua
         }
     }
 
+    /// @dev Handles the flash loan callback during a leverage operation.
     function _handleLeverageCallback(
         FlashLoanContext memory ctx,
         address underlyingToken,
@@ -293,6 +311,7 @@ contract V3Leverager is ILeveragerV3, IFlashLoanCallback, Ownable, ReentrancyGua
         );
     }
 
+    /// @dev Handles the flash loan callback during a deleverage operation.
     function _handleDeleverageCallback(
         FlashLoanContext memory ctx,
         address underlyingToken,
@@ -314,9 +333,13 @@ contract V3Leverager is ILeveragerV3, IFlashLoanCallback, Ownable, ReentrancyGua
         );
         if (debtReceived < ctx.burnAmount) revert SlippageExceeded();
 
-        // 2. Burn debt tokens
-        IERC20(debtToken).forceApprove(ctx.vault, debtReceived);
-        vault.vaultBurnDebtTokens(debtReceived);
+        // 2. Burn only the required debt tokens; return surplus to user
+        IERC20(debtToken).forceApprove(ctx.vault, ctx.burnAmount);
+        vault.vaultBurnDebtTokens(ctx.burnAmount);
+        uint256 debtSurplus = debtReceived - ctx.burnAmount;
+        if (debtSurplus > 0) {
+            IERC20(debtToken).safeTransfer(ctx.user, debtSurplus);
+        }
 
         // 3. Withdraw yield tokens (use actual withdrawn amount)
         uint256 yieldWithdrawn = vault.vaultWithdrawYieldTokens(ctx.withdrawAmount, address(this));
@@ -357,6 +380,7 @@ contract V3Leverager is ILeveragerV3, IFlashLoanCallback, Ownable, ReentrancyGua
 
     // ============ Internal Helpers ============
 
+    /// @dev Reads the debt token address from the vault's Alchemist.
     function _getDebtToken(address vault) internal view returns (address) {
         IAlchemistV3 alchemist = ILeveragedVaultAlchemist(vault).alchemist();
         return alchemist.debtToken();
@@ -364,51 +388,75 @@ contract V3Leverager is ILeveragerV3, IFlashLoanCallback, Ownable, ReentrancyGua
 
     // ============ Admin Functions ============
 
+    /// @notice Approve or revoke a token converter for use in leverage/deleverage operations.
+    /// @param converter The converter address.
+    /// @param approved True to approve, false to revoke.
     function setConverterApproval(address converter, bool approved) external onlyOwner {
         _approvedConverters[converter] = approved;
         emit ConverterApprovalSet(converter, approved);
     }
 
+    /// @notice Approve or revoke a flash loan adapter.
+    /// @param adapter The flash loan adapter address.
+    /// @param approved True to approve, false to revoke.
     function setFlashLoanAdapterApproval(address adapter, bool approved) external onlyOwner {
         _approvedFlashLoanAdapters[adapter] = approved;
         emit FlashLoanAdapterApprovalSet(adapter, approved);
     }
 
+    /// @notice Approve or revoke a debt-token swapper.
+    /// @param swapper The swapper address.
+    /// @param approved True to approve, false to revoke.
     function setSwapperApproval(address swapper, bool approved) external onlyOwner {
         _approvedSwappers[swapper] = approved;
         emit SwapperApprovalSet(swapper, approved);
     }
 
-    // Batch approval for convenience
+    /// @notice Batch-approve multiple converters, flash loan adapters, and swappers in one call.
+    /// @param converters Array of converter addresses to approve.
+    /// @param flashLoanAdapters Array of flash loan adapter addresses to approve.
+    /// @param swappers Array of swapper addresses to approve.
     function batchApprove(
         address[] calldata converters,
         address[] calldata flashLoanAdapters,
         address[] calldata swappers
     ) external onlyOwner {
-        for (uint256 i = 0; i < converters.length; i++) {
+        for (uint256 i = 0; i < converters.length;) {
             _approvedConverters[converters[i]] = true;
             emit ConverterApprovalSet(converters[i], true);
+            unchecked { ++i; }
         }
-        for (uint256 i = 0; i < flashLoanAdapters.length; i++) {
+        for (uint256 i = 0; i < flashLoanAdapters.length;) {
             _approvedFlashLoanAdapters[flashLoanAdapters[i]] = true;
             emit FlashLoanAdapterApprovalSet(flashLoanAdapters[i], true);
+            unchecked { ++i; }
         }
-        for (uint256 i = 0; i < swappers.length; i++) {
+        for (uint256 i = 0; i < swappers.length;) {
             _approvedSwappers[swappers[i]] = true;
             emit SwapperApprovalSet(swappers[i], true);
+            unchecked { ++i; }
         }
     }
 
     // ============ View Functions ============
 
+    /// @notice Returns whether a converter is approved for use.
+    /// @param converter The converter address to check.
+    /// @return True if approved.
     function isApprovedConverter(address converter) external view returns (bool) {
         return _approvedConverters[converter];
     }
 
+    /// @notice Returns whether a flash loan adapter is approved for use.
+    /// @param adapter The adapter address to check.
+    /// @return True if approved.
     function isApprovedFlashLoanAdapter(address adapter) external view returns (bool) {
         return _approvedFlashLoanAdapters[adapter];
     }
 
+    /// @notice Returns whether a swapper is approved for use.
+    /// @param swapper The swapper address to check.
+    /// @return True if approved.
     function isApprovedSwapper(address swapper) external view returns (bool) {
         return _approvedSwappers[swapper];
     }
