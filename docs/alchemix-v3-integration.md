@@ -43,10 +43,8 @@ leverager.setConverterApproval(address(converter), true);
 leverager.setFlashLoanAdapterApproval(address(flashLoanAdapter), true);
 leverager.setSwapperApproval(address(swapper), true);
 
-// Deploy the vault with default adapters
-LeveragedVault vault = new LeveragedVault(
-    "Vault Name",
-    "VTKN",
+// Deploy vaults via factory (EIP-1167 clones)
+address vault = factory.createVault(
     YIELD_TOKEN,
     UNDERLYING_TOKEN,
     ALCHEMIST_V3_ADDRESS,
@@ -58,6 +56,7 @@ LeveragedVault vault = new LeveragedVault(
     address(swapper),
     WETH_ADDRESS
 );
+// Name/symbol auto-generated (e.g., "Logris Leveraged WETH" / "lvWETH")
 ```
 
 ### Performing Leverage Operations
@@ -131,41 +130,37 @@ Here's how a flash loan leverage operation works with Alchemix V3:
 
 ## Testing
 
-Tests are available in `test/LeveragedVaultTest.t.sol` that verify:
-- Vault position creation and management
-- Flash loan leveraging with Balancer integration
-- Multi-user deposits and proportional share calculations
-- Leverage efficiency bonuses and metrics
-- Swap functionality with Curve integration
+Tests covering the V3 integration:
+- `test/IntegrationAndInvariant.t.sol` — Full deposit→leverage→withdraw cycle, invariants
+- `test/V3LeveragerModular.t.sol` — V3Leverager unit tests with mocks
+- `test/V3LeveragerE2E.t.sol` — E2E tests on mainnet fork
+- `test/AdapterUnit.t.sol` — WstETHAdapter, WETHToWstETHConverter, AaveV3FlashLoan unit tests
+- `test/SecurityTests.t.sol` — Callback spoofing, slippage, reentrancy tests
 
-Additional tests are available in:
-- `test/BasicAlchemistV3Integrator.t.sol` - Basic Alchemist V3 operations
-- `test/AlchemistV3LeverageCalculator.t.sol` - Leverage calculation tests
-
-Run all V3-related tests with:
+Run V3-related tests with:
 ```bash
-forge test --match-path "test/*V3*.t.sol" -vvv
-forge test --match-path "test/LeveragedVaultTest.t.sol" -vvv
+forge test --match-contract V3LeveragerModularTest -vv
+forge test --match-contract FullIntegrationTest -vv
 ```
 
-## Constructor Parameters
+## Initialization Parameters
 
-### LeveragedVault
+### LeveragedVault (via factory clone + initialize)
 
 ```solidity
-LeveragedVault(
-    string memory tokenName,              // Vault token name
-    string memory tokenDescription,       // Vault token symbol
-    address yieldToken,                   // Yield token (e.g., wstETH)
-    address underlyingToken,              // Underlying token (e.g., WETH)
-    address alchemistV3,                  // Alchemist V3 contract
-    address leverager,                    // Leverager contract
-    uint32 underlyingSlippageBasisPoints, // Slippage (100 = 1%)
-    uint32 debtSlippageBasisPoints,       // Slippage (300 = 3%)
-    address defaultConverter,             // ITokenConverter
-    address defaultFlashLoanAdapter,      // IFlashLoanAdapter
-    address defaultSwapper,               // ISwapper
-    address wETH                          // WETH contract
+// Deployed as EIP-1167 minimal proxy clone via LeveragedVaultFactory
+vault.initialize(
+    address yieldToken_,                  // Yield token (e.g., wstETH)
+    address underlyingTokenAddress,       // Underlying token (e.g., WETH)
+    address _alchemist,                   // AlchemistV3 contract
+    address _leverager,                   // V3Leverager contract
+    uint32 _underlyingSlippageBasisPoints,// Slippage (100 = 1%)
+    uint32 _debtSlippageBasisPoints,      // Slippage (300 = 3%)
+    address _converter,                   // ITokenConverter (immutable)
+    address _flashLoanAdapter,            // IFlashLoanAdapter (immutable)
+    address _swapper,                     // ISwapper (immutable)
+    address _weth,                        // WETH contract
+    address initialOwner                  // Vault owner (set by factory to msg.sender)
 )
 ```
 

@@ -58,7 +58,7 @@ All depositors share a single leveraged position proportionally through ERC4626 
 
 - **Modular adapters.** Converters (WETH↔wstETH), flash loan providers (Balancer/Aave/Euler), and swappers (Curve alETH↔WETH) are independent contracts behind common interfaces. Any combination can be used per operation.
 
-- **Default + override pattern.** Each vault stores default adapters and slippage parameters. Users can call `leverage()` with defaults, `leverageAtomic()` for a one-call experience, or `leverageWithAdapters()` to override everything.
+- **Immutable adapters.** Each vault's adapters (converter, flash loan, swapper) are set at construction and cannot be changed. Users call `leverage()` with explicit parameters or `leverageAtomic()` for a one-call experience.
 
 - **Shared position.** All depositors in a vault share one AlchemistV3 position NFT. Share value tracks the net position value (collateral minus debt, converted to underlying).
 
@@ -83,7 +83,6 @@ Both return the number of vault shares minted. The first depositor receives shar
 |----------|-------------|
 | `leverage(clampedDeposit, flashLoanAmount, underlyingDepositMin, mintAmount, debtTradeMin)` | Execute with explicit parameters |
 | `leverageAtomic(depositAmount, underlyingSlippageBps, debtSlippageBps)` | One-call convenience — computes all parameters internally |
-| `leverageWithAdapters(...)` | Execute with explicit parameters AND custom adapters |
 
 The leverage flow:
 1. Convert pool's underlying (WETH) → yield tokens (wstETH)
@@ -94,7 +93,7 @@ The leverage flow:
 6. Swap debt → underlying to repay flash loan
 7. Return surplus to user
 
-**Slippage protection:** The vault enforces minimum slippage on all leverage calls. If the vault's `debtSlippageBasisPoints` is set to 400 (4%), then `debtTradeMin` must be at least `mintAmount * 92/100` (2x the configured slippage as floor). This prevents sandwich attacks where a caller passes `debtTradeMin = 0`.
+**Slippage protection:** The vault enforces minimum slippage on all leverage calls. If the vault's `debtSlippageBasisPoints` is set to 400 (4%), then `debtTradeMin` must be at least `mintAmount * 96/100` (the configured slippage as floor). This prevents sandwich attacks where a caller passes `debtTradeMin = 0`.
 
 #### Withdrawing
 
@@ -102,7 +101,6 @@ The leverage flow:
 |----------|-------------|
 | `withdrawUnderlying(shares, flashLoanAmount, burnAmount, minUnderlyingOut)` | Withdraw with explicit deleverage parameters |
 | `withdrawUnderlyingAtomic(shares, underlyingSlippageBps, debtSlippageBps)` | One-call convenience |
-| `withdrawUnderlyingWithAdapters(...)` | Withdraw with custom adapters |
 
 Three withdrawal paths depending on the vault state:
 1. **Pool has enough:** Direct transfer from the unleveraged pool balance
@@ -129,13 +127,10 @@ Three withdrawal paths depending on the vault state:
 
 | Function | Description |
 |----------|-------------|
-| `pause()` / `unpause()` | Emergency pause all deposits, leverage, and withdrawals |
-| `setDefaultConverter(address)` | Change the default token converter |
-| `setDefaultFlashLoanAdapter(address)` | Change the default flash loan source |
-| `setDefaultSwapper(address)` | Change the default debt↔underlying swapper |
-| `setDefaultAdapters(converter, flashLoan, swapper)` | Set all three at once |
+| `pause()` / `unpause()` | Emergency pause deposits and leverage operations (withdrawals remain available) |
 | `setSlippageParameters(underlyingBps, debtBps)` | Update default slippage tolerance |
 | `emergencySweepToken(token, amount, recipient)` | Recover stuck ERC20 tokens |
+| `emergencySweepETH(recipient)` | Recover stuck ETH |
 | `sweepUnknownPosition(tokenId, to)` | Transfer an unexpected position NFT out |
 
 ### LeveragedVaultFactory
@@ -144,8 +139,6 @@ Deploys new `LeveragedVault` instances with full parameter validation.
 
 ```solidity
 factory.createVault(
-    "lvWSTETH",                    // token name
-    "Leveraged wstETH Vault",      // token symbol
     WSTETH,                        // yield token
     WETH,                          // underlying token
     address(alchemist),            // AlchemistV3 address
@@ -159,7 +152,7 @@ factory.createVault(
 );
 ```
 
-The factory validates all addresses are non-zero contracts, checks slippage bounds, prevents duplicate vaults per yield token, and transfers ownership of the created vault to the caller.
+The factory validates all addresses are non-zero contracts, checks slippage bounds, prevents duplicate vaults per (yieldToken, alchemist) pair, and transfers ownership of the created vault to the caller. Vault name and symbol are auto-generated from the underlying token (e.g., "Logris Leveraged WETH" / "lvWETH").
 
 ### V3Leverager
 
@@ -286,7 +279,7 @@ Token adapter for AlchemistV3 integration. Provides price oracle data for wstETH
 src/
 ├── LeveragedVault.sol              # Main ERC4626 vault
 ├── LeveragedVaultFactory.sol       # Factory for deploying vaults
-├── ERC4626.sol                     # Base ERC4626 implementation
+├── ERC4626Upgradeable.sol          # Custom ERC4626 with ERC-7201 storage
 │
 ├── leveragers/
 │   └── V3Leverager.sol             # Modular leverager with registry pattern
@@ -330,7 +323,7 @@ test/
 ├── SecurityTests.t.sol             # Security-focused tests (721 lines)
 ├── FuzzTests.t.sol                 # Fuzz tests for math (506 lines)
 ├── FlashLoanAdapterFork.t.sol      # Flash loan adapter tests (516 lines)
-├── ERC4626.t.sol                   # ERC4626 compliance tests (370 lines)
+├── AdapterUnit.t.sol               # WstETHAdapter, WETHToWstETHConverter, AaveV3FlashLoan unit tests (771 lines)
 ├── CurveSwapperFork.t.sol          # Curve swapper fork tests (362 lines)
 ├── LeveragedVaultFactory.t.sol     # Factory validation tests (323 lines)
 ├── CurveSwapperUnit.t.sol          # Curve swapper unit tests (268 lines)
@@ -410,12 +403,12 @@ forge test -vv
 | Security | `forge test --match-contract SecurityTests` | Callback spoofing, slippage, reentrancy |
 | Factory | `forge test --match-contract LeveragedVaultFactoryTest` | Input validation, ownership |
 | Pause | `forge test --match-contract LeveragedVaultPauseTest` | Pause blocks all operations |
-| ERC4626 | `forge test --match-contract ERC4626Test` | Standard compliance |
+| Adapters | `forge test --match-contract AdapterUnit` | WstETHAdapter, WETHToWstETHConverter, AaveV3FlashLoan |
 | E2E | `forge test --match-contract V3LeveragerE2ETest` | Real AlchemistV3 + Curve on fork |
 
 ### Test Summary
 
-- **284 tests total**, all passing
+- **178 non-fork tests**, all passing (7 fork tests require `ALCHEMY_API_KEY`)
 - **15 fuzz tests** with 256 runs each for mathematical properties
 - **3 invariant tests** with random deposit/withdraw sequences
 - **12 E2E tests** on mainnet fork with real protocols
@@ -427,7 +420,7 @@ forge test -vv
 
 | Role | Permissions |
 |------|------------|
-| **Vault Owner** | Pause/unpause, set default adapters, set slippage, emergency sweep |
+| **Vault Owner** | Pause/unpause, set slippage, emergency sweep |
 | **Leverager Owner** | Approve/revoke adapters in registry |
 | **Anyone** | Deposit, withdraw, call leverage/deleverage (with slippage enforcement) |
 
@@ -438,7 +431,7 @@ forge test -vv
 - **Concurrent operation guard:** `noConcurrentOperation` modifier prevents overlapping leverage/deleverage
 - **Flash loan callback validation:** State machine + initiator + caller checks prevent spoofed callbacks
 - **Adapter registry:** Only owner-approved adapters can be used by the leverager
-- **Pausable:** Owner can halt all vault operations in emergencies
+- **Pausable:** Owner can halt deposits and leverage operations; withdrawals remain available
 - **Emergency sweep:** Owner can recover stuck tokens from vault, adapters, and converters
 - **Position integrity:** Vault validates it owns exactly one AlchemistV3 position NFT
 
