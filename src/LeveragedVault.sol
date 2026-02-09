@@ -805,6 +805,9 @@ contract LeveragedVault is
             if ($.vaultPositionId == 0) revert NoPosition();
             _requireSinglePosition(IAlchemistV3Position($.alchemist.alchemistPositionNFT()));
 
+            // CEI: burn shares before external calls (consistent with Path 3 / S-03 fix).
+            _burn(msg.sender, shares);
+
             uint256 yieldToWithdraw = $.alchemist.convertUnderlyingTokensToYield(neededFromAlchemist);
             uint256 withdrawn = $.alchemist.withdraw(yieldToWithdraw, address(this), $.vaultPositionId);
             IERC20($.yieldToken).forceApprove($.converter, withdrawn);
@@ -820,7 +823,6 @@ contract LeveragedVault is
             if (totalUnderlyingOut < minUnderlyingOut) revert InsufficientWithdrawal();
             if (totalUnderlyingOut < underlyingWithdrawAmount) revert InsufficientWithdrawal();
 
-            _burn(msg.sender, shares);
             $.underlyingToken.safeTransfer(msg.sender, underlyingWithdrawAmount);
         // Path 3: Flash loan deleverage
         } else {
