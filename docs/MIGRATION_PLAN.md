@@ -1,19 +1,35 @@
-# LeveragedVault Migration Plan: AlchemistV2 → AlchemistV3
+# LeveragedVault Migration Plan: AlchemistV2 -> AlchemistV3
 
-## Overview
-
-This document plans the migration of LeveragedVault from AlchemistV2 to AlchemistV3, preserving the original interface and behavior while adapting to V3's NFT-based position model.
+> **Status: COMPLETED** (2026-02-07)
+>
+> This document is a historical record of the V2 -> V3 migration planning. The migration
+> has been fully implemented and audited (two rounds). For current architecture documentation,
+> see the [README](../README.md) and the [Alchemix V3 Integration Guide](alchemix-v3-integration.md).
 
 ---
 
-## 1. API Mapping: AlchemistV2 → AlchemistV3
+## Overview
+
+This document planned the migration of LeveragedVault from AlchemistV2 to AlchemistV3, preserving the original interface and behavior while adapting to V3's NFT-based position model.
+
+**Outcome:** All planned changes were implemented successfully. The system now uses:
+- `V3Leverager` (replaced `SimpleLeveragerWstETH`) as a modular, registry-based leverager
+- NFT-based position management via `ILeveragedVaultCallback`
+- EIP-1167 minimal proxy clones via `LeveragedVaultFactory`
+- ERC-7201 namespaced storage for clone-safe storage layout
+- Modular adapter system (`ITokenConverter`, `IFlashLoanAdapter`, `ISwapper`)
+- Test suite split across 19 files (345 non-fork tests)
+
+---
+
+## 1. API Mapping: AlchemistV2 -> AlchemistV3
 
 ### Position/Account Queries
 
 | AlchemistV2 | AlchemistV3 | Notes |
 |-------------|-------------|-------|
-| `positions(owner, yieldToken) → (shares, lastAccruedWeight)` | `getCDP(tokenId) → (collateral, debt, earmarked)` | V3 uses tokenId, returns collateral directly (not shares) |
-| `accounts(owner) → (debt, depositedTokens[])` | `getCDP(tokenId)` | Combined into getCDP |
+| `positions(owner, yieldToken) -> (shares, lastAccruedWeight)` | `getCDP(tokenId) -> (collateral, debt, earmarked)` | V3 uses tokenId, returns collateral directly (not shares) |
+| `accounts(owner) -> (debt, depositedTokens[])` | `getCDP(tokenId)` | Combined into getCDP |
 | `convertSharesToUnderlyingTokens(yieldToken, shares)` | `convertYieldTokensToUnderlying(amount)` | V3 has no shares concept, collateral IS yield tokens |
 | N/A | `getMaxBorrowable(tokenId)` | **NEW in V3** - directly returns max borrowable |
 
@@ -70,307 +86,91 @@ This document plans the migration of LeveragedVault from AlchemistV2 to Alchemis
 
 **V2**: Deposits UNDERLYING tokens (e.g., WETH)
 ```
-User deposits WETH → Alchemist wraps to yYieldToken → Credits shares to user
+User deposits WETH -> Alchemist wraps to yYieldToken -> Credits shares to user
 ```
 
 **V3**: Deposits YIELD tokens directly (e.g., wstETH)
 ```
-User deposits wstETH → Alchemist credits collateral to position
+User deposits wstETH -> Alchemist credits collateral to position
 ```
 
-**Implication**: The leverage flow must convert WETH flash loans to wstETH BEFORE depositing to Alchemist.
+**Implication**: The leverage flow must convert WETH flash loans to wstETH BEFORE depositing to Alchemist. This is handled by the `ITokenConverter` adapter.
 
 ---
 
-## 3. Functions to Implement in LeveragedVault
+## 3. Implementation Outcome
 
-### 3.1 View Functions (Port from Old Leverager)
+All planned functions were implemented in `LeveragedVault.sol` (1,013 LOC):
 
-```solidity
-// Get deposited balance (collateral) for the vault's position
-function getVaultDepositedBalance() external view returns (uint256);
+### View Functions (implemented)
+- `getVaultDepositedBalance()` -- queries `alchemist.getCDP(positionId)`
+- `getVaultDebtBalance()` -- queries position debt
+- `getVaultRedeemableBalance()` -- pool + (collateral - earmarked - debt), in underlying
+- `getDepositCapacity()` -- `depositCap() - getTotalDeposited()`
+- `getBorrowCapacity()` -- `getMaxBorrowable(positionId)`
+- `getFreeWithdrawCapacity()` -- collateral withdrawable without deleveraging
+- `getTotalWithdrawCapacity()` -- total withdrawable (may require deleveraging)
 
-// Get debt balance for the vault's position
-function getVaultDebtBalance() external view returns (int256);
+### Parameter Calculation (implemented)
+- `getLeverageParameters()` -- computes flash loan amount, mint amount, slippage minimums
+- `getWithdrawUnderlyingParameters()` -- computes deleverage params
+- Both have overloads: one using vault default slippage, one with explicit slippage params
 
-// Get redeemable balance (collateral - debt value)
-function getVaultRedeemableBalance() public view returns (uint256);
+### Core Actions (implemented)
+- `depositUnderlying(uint256)` / `depositUnderlying()` payable
+- `leverage()` / `leverageAtomic()`
+- `withdrawUnderlying()` / `withdrawUnderlyingAtomic()`
 
-// Get remaining deposit capacity in Alchemist
-function getDepositCapacity() public view returns (uint256);
+---
 
-// Get remaining borrow capacity for the vault's position
-function getBorrowCapacity() public view returns (uint256);
+## 4. Flash Loan Amount Calculation (implemented)
 
-// Get withdrawable shares without deleveraging
-function getFreeWithdrawCapacity() public view returns (uint256);
+The formula accounts for underlying slippage, debt slippage, collateralization ratio, and existing borrow capacity:
 
-// Get total withdrawable shares (may require deleveraging)
-function getTotalWithdrawCapacity() public view returns (uint256);
 ```
+debtTradeLoss = 1 - debtSlippageBasisPoints / 10000
+totalTradeLoss = debtTradeLoss * (1 - underlyingSlippageBasisPoints / 10000)
 
-### 3.2 Parameter Calculation Functions (CRITICAL - Port from Old Leverager)
-
-```solidity
-// Calculate all leverage parameters given deposit amount and slippage tolerances
-function getLeverageParameters(
-    uint256 depositAmount,
-    uint32 underlyingSlippageBasisPoints,
-    uint32 debtSlippageBasisPoints
-) external view returns (
-    uint256 clampedDeposit,      // Actual deposit (clamped to capacity)
-    uint256 flashLoanAmount,     // Amount to flash loan
-    uint256 underlyingDepositMin,// Min yield tokens to receive from deposit
-    uint256 mintAmount,          // Amount of debt to mint
-    uint256 debtTradeMin         // Min underlying from debt swap
-);
-
-// Calculate all withdraw parameters
-function getWithdrawUnderlyingParameters(
-    uint256 shares,
-    uint32 underlyingSlippageBasisPoints,
-    uint32 debtSlippageBasisPoints
-) external view returns (
-    uint256 flashLoanAmount,     // Amount to flash loan for deleveraging
-    uint256 burnAmount,          // Amount of debt to burn
-    uint256 minUnderlyingOut     // Min underlying to receive
-);
-```
-
-### 3.3 Core Action Functions
-
-```solidity
-// Deposit underlying tokens (user-facing)
-function depositUnderlying(uint256 amount) external returns (uint256 shares);
-function depositUnderlying() external payable returns (uint256 shares); // ETH variant
-
-// Execute leverage with explicit parameters
-function leverage(
-    uint256 clampedDeposit,
-    uint256 flashLoanAmount,
-    uint256 underlyingDepositMin,
-    uint256 mintAmount,
-    uint256 debtTradeMin
-) external;
-
-// Execute leverage with computed parameters (atomic/convenience)
-function leverageAtomic(
-    uint256 depositAmount,
-    uint32 underlyingSlippageBasisPoints,
-    uint32 debtSlippageBasisPoints
-) external;
-
-// Withdraw with explicit parameters
-function withdrawUnderlying(
-    uint256 shares,
-    uint256 flashLoanAmount,
-    uint256 burnAmount,
-    uint256 minUnderlyingOut
-) external returns (uint256 underlyingAmount);
-
-// Withdraw with computed parameters (atomic/convenience)
-function withdrawUnderlyingAtomic(
-    uint256 shares,
-    uint32 underlyingSlippageBasisPoints,
-    uint32 debtSlippageBasisPoints
-) external returns (uint256 underlyingAmount);
+flashLoanAmount = (totalTradeLoss * depositAmount
+                   + collateralizationRatio * debtTradeLoss * borrowCapacity)
+                  / (collateralizationRatio - totalTradeLoss)
 ```
 
 ---
 
-## 4. Flash Loan Amount Calculation
+## 5. Files Changed (final state)
 
-### Original Formula (from V2 Leverager)
+| Planned File | Actual Outcome |
+|--------------|----------------|
+| `src/interfaces/ILeveragedVault.sol` | Implemented with all view + action signatures |
+| `src/LeveragedVault.sol` | 1,013 LOC, all functions implemented with ERC-7201 storage |
+| `src/leveragers/SimpleLeveragerWstETH.sol` | **Replaced** by `src/leveragers/V3Leverager.sol` (463 LOC) |
+| `test/LeveragedVault.t.sol` | **Split** across 19 test files (345 non-fork tests) |
 
-The flash loan calculation accounts for:
-1. **Underlying slippage**: Loss when converting WETH → wstETH
-2. **Debt slippage**: Loss when swapping alETH → WETH (includes peg deviation)
-3. **Collateralization ratio**: Required collateral/debt ratio (e.g., 111%)
-4. **Existing borrow capacity**: Can leverage more if already have collateral
+### Additional files created during migration (not in original plan)
 
-```solidity
-/*
- * Derivation:
- * deposit amount ETH                                              D
- * borrow X ETH (flash loan)
- * deposit D+X yield tokens
- * receive (D+X)*underlyingSlippage borrow capacity
- * borrow ((D+X)*underlyingSlippage)/CR + existingBorrowCapacity
- * trade borrowed alETH for debtSlippage*alETH WETH
- * repay X ETH
- *
- * For the math to work: repayAmount = flashLoanAmount
- *
- * debtTradeLoss = 1 - debtSlippageBasisPoints/10000
- * totalTradeLoss = debtTradeLoss * (1 - underlyingSlippageBasisPoints/10000)
- *
- * flashLoanAmount = ((totalTradeLoss * depositAmount)
- *                    + (collateralizationRatio * debtTradeLoss * borrowCapacity))
- *                   / (collateralizationRatio - totalTradeLoss)
- */
-function _calculateFlashLoanAmount(
-    uint256 depositAmount,
-    uint32 underlyingSlippageBasisPoints,
-    uint32 debtSlippageBasisPoints,
-    uint256 borrowCapacity,
-    uint256 minimumCollateralization
-) internal pure returns (uint256 flashLoanAmount) {
-    uint256 debtTradeLoss = _basisPointAdjustment(1 ether, debtSlippageBasisPoints);
-    uint256 totalTradeLoss = _basisPointAdjustment(debtTradeLoss, underlyingSlippageBasisPoints);
-
-    flashLoanAmount = ((totalTradeLoss * depositAmount)
-                       + (minimumCollateralization * debtTradeLoss * borrowCapacity / 1e18))
-                       / (minimumCollateralization - totalTradeLoss);
-}
-
-function _basisPointAdjustment(uint256 amount, uint32 slippageBasisPoints) internal pure returns (uint256) {
-    return amount * (10000 - slippageBasisPoints) / 10000;
-}
-```
-
-### V3 Adaptation
-
-In V3, we can use `getMaxBorrowable(tokenId)` instead of calculating borrow capacity manually. However, we need to account for:
-
-1. **Current position state**: Query via `getCDP(vaultPositionId)`
-2. **Future position state**: After depositing `depositAmount + flashLoanAmount`
-3. **Conversion rates**: Use `convertYieldTokensToUnderlying()` and `normalizeDebtTokensToUnderlying()`
+| File | Purpose |
+|------|---------|
+| `src/LeveragedVaultFactory.sol` | EIP-1167 clone factory (109 LOC) |
+| `src/ERC4626Upgradeable.sol` | Custom ERC4626 with ERC-7201 storage (180 LOC) |
+| `src/interfaces/ILeveragedVaultCallback.sol` | Callback interface for leverager -> vault |
+| `src/interfaces/ILeveragerV3.sol` | Generic leverager interface + param structs |
+| `src/interfaces/ITokenConverter.sol` | Converter interface |
+| `src/interfaces/ISwapper.sol` | Swapper interface |
+| `src/interfaces/flashloan/IFlashLoanAdapter.sol` | Flash loan adapter interface |
+| `src/adapters/flashloan/BalancerFlashLoanAdapter.sol` | Balancer V2 flash loan adapter |
+| `src/adapters/flashloan/AaveV3FlashLoanAdapter.sol` | Aave V3 flash loan adapter |
+| `src/adapters/flashloan/EulerFlashLoanAdapter.sol` | Euler flash loan adapter |
+| `src/adapters/CurveSwapper.sol` | Curve alETH/WETH swapper |
+| `src/adapters/WstETHAdapter.sol` | AlchemistV3 token adapter for wstETH |
+| `src/converters/WETHToWstETHConverter.sol` | WETH <-> wstETH converter |
 
 ---
 
-## 5. Leverage Flow (V3 Adapted)
+## 6. Questions & Answers (all resolved)
 
-```
-1. User calls depositUnderlying(amount)
-   → User's underlying tokens transferred to vault
-   → Vault mints shares to user
-
-2. Operator calls leverage(params) or leverageAtomic(amount, slippage)
-   → Vault calculates or validates parameters
-   → Vault approves leverager
-   → Leverager executes:
-      a. Take flash loan (WETH)
-      b. Convert WETH → stETH → wstETH (Lido)
-      c. Call vault.vaultDepositYieldTokens(wstETH amount)
-         → Vault deposits to Alchemist, creates/updates position
-      d. Call vault.vaultMintDebtTokens(alETH amount)
-         → Vault mints alETH from position
-      e. Swap alETH → WETH (Curve)
-      f. Repay flash loan
-      g. Return surplus to vault
-```
-
----
-
-## 6. Deleverage Flow (V3 Adapted)
-
-```
-1. User calls withdrawUnderlying(shares, params) or withdrawUnderlyingAtomic(shares, slippage)
-   → If pool has enough unleveraged funds: simple withdrawal
-   → If needs deleveraging:
-      a. Take flash loan (WETH)
-      b. Swap WETH → alETH (Curve)
-      c. Call vault.vaultBurnDebtTokens(alETH amount)
-         → Vault burns debt, freeing collateral
-      d. Call vault.vaultWithdrawYieldTokens(wstETH amount)
-         → Vault withdraws from Alchemist
-      e. Convert wstETH → stETH → ETH → WETH (or direct sell)
-      f. Repay flash loan
-      g. Send underlying to user
-   → Vault burns user's shares
-```
-
----
-
-## 7. Interface Contracts Needed
-
-### ILeveragedVault.sol (Updated)
-
-```solidity
-interface ILeveragedVault is IERC4626 {
-    // Events
-    event DepositUnderlying(address indexed sender, address indexed underlyingToken, uint256 amount);
-    event WithdrawUnderlying(address indexed sender, address indexed underlyingToken, uint256 shares);
-    event Leverage(address indexed yieldToken, uint256 depositAmount, int256 debtAmount);
-
-    // View functions
-    function getYieldToken() external view returns (address);
-    function getUnderlyingToken() external view returns (address);
-    function getDepositPoolBalance() external view returns (uint256);
-    function getVaultDepositedBalance() external view returns (uint256);
-    function getVaultDebtBalance() external view returns (int256);
-    function getVaultRedeemableBalance() external view returns (uint256);
-    function getDepositCapacity() external view returns (uint256);
-    function getBorrowCapacity() external view returns (uint256);
-    function convertUnderlyingTokensToShares(uint256 amount) external view returns (uint256);
-    function convertSharesToUnderlyingTokens(uint256 shares) external view returns (uint256);
-
-    // Parameter calculation
-    function getLeverageParameters(
-        uint256 depositAmount,
-        uint32 underlyingSlippageBasisPoints,
-        uint32 debtSlippageBasisPoints
-    ) external view returns (
-        uint256 clampedDeposit,
-        uint256 flashLoanAmount,
-        uint256 underlyingDepositMin,
-        uint256 mintAmount,
-        uint256 debtTradeMin
-    );
-
-    function getWithdrawUnderlyingParameters(
-        uint256 shares,
-        uint32 underlyingSlippageBasisPoints,
-        uint32 debtSlippageBasisPoints
-    ) external view returns (
-        uint256 flashLoanAmount,
-        uint256 burnAmount,
-        uint256 minUnderlyingOut
-    );
-
-    // User actions
-    function depositUnderlying(uint256 amount) external returns (uint256 shares);
-    function depositUnderlying() external payable returns (uint256 shares);
-
-    // Leverage actions
-    function leverage(
-        uint256 clampedDeposit,
-        uint256 flashLoanAmount,
-        uint256 underlyingDepositMin,
-        uint256 mintAmount,
-        uint256 debtTradeMin
-    ) external;
-
-    function leverageAtomic(
-        uint256 depositAmount,
-        uint32 underlyingSlippageBasisPoints,
-        uint32 debtSlippageBasisPoints
-    ) external;
-
-    // Withdraw actions
-    function withdrawUnderlying(
-        uint256 shares,
-        uint256 flashLoanAmount,
-        uint256 burnAmount,
-        uint256 minUnderlyingOut
-    ) external returns (uint256 underlyingAmount);
-
-    function withdrawUnderlyingAtomic(
-        uint256 shares,
-        uint32 underlyingSlippageBasisPoints,
-        uint32 debtSlippageBasisPoints
-    ) external returns (uint256 underlyingAmount);
-}
-```
-
----
-
-## 8. Questions Requiring Clarification
-
-Before implementing, the following need to be verified:
-
-1. **V3 Deposit Flow**: Does AlchemistV3 `deposit()` expect yield tokens (wstETH) or does it have a `depositUnderlying()` equivalent?
-   - **Answer**: V3 `deposit()` takes yield tokens directly. No `depositUnderlying` wrapper.
+1. **V3 Deposit Flow**: Does AlchemistV3 `deposit()` expect yield tokens?
+   - **Answer**: Yes, V3 `deposit()` takes yield tokens directly. No `depositUnderlying` wrapper.
 
 2. **Mint Allowance**: How does `approveMint` work when the vault owns the position?
    - **Answer**: Vault calls `alchemist.approveMint(vaultPositionId, leverager, amount)` before leverage.
@@ -378,43 +178,23 @@ Before implementing, the following need to be verified:
 3. **Flash Loan Fee**: Does Balancer V2 have flash loan fees?
    - **Answer**: No, Balancer V2 flash loans are fee-free.
 
-4. **wstETH Conversion**: When we flash loan WETH, we need to convert to wstETH. What's the conversion path?
-   - **Answer**: WETH → unwrap to ETH → stETH.submit() → wstETH.wrap()
+4. **wstETH Conversion**: WETH -> wstETH conversion path?
+   - **Answer**: WETH -> unwrap to ETH -> `stETH.submit()` -> `wstETH.wrap()`
 
 5. **Position Creation**: Does V3 create a position automatically on first deposit?
    - **Answer**: Yes, passing `recipientId = 0` to `deposit()` creates a new position.
 
 ---
 
-## 9. Implementation Order
+## 7. Safety Considerations (all addressed)
 
-1. **Phase 1**: Update ILeveragedVault interface with all required functions
-2. **Phase 2**: Implement view functions (getDepositCapacity, getBorrowCapacity, etc.)
-3. **Phase 3**: Implement `getLeverageParameters()` and `_calculateFlashLoanAmount()`
-4. **Phase 4**: Implement `getWithdrawUnderlyingParameters()`
-5. **Phase 5**: Update `leverage()` to use V3-style 5-parameter signature
-6. **Phase 6**: Implement `leverageAtomic()` convenience function
-7. **Phase 7**: Implement deleverage flow in `withdrawUnderlying()`
-8. **Phase 8**: Implement `withdrawUnderlyingAtomic()` convenience function
-9. **Phase 9**: Update tests to cover all scenarios
-
----
-
-## 10. Files to Modify
-
-| File | Changes |
-|------|---------|
-| `src/interfaces/ILeveragedVault.sol` | Add all view and action function signatures |
-| `src/LeveragedVault.sol` | Implement all functions, integrate with AlchemistV3 |
-| `src/leveragers/SimpleLeveragerWstETH.sol` | Update to work with new vault interface |
-| `test/LeveragedVault.t.sol` | New comprehensive test suite |
-
----
-
-## 11. Safety Considerations
-
-1. **Slippage Protection**: All swap operations must have minimum output checks
-2. **Reentrancy**: Use checks-effects-interactions pattern, consider ReentrancyGuard
-3. **Flash Loan Validation**: Verify callback is from expected flash loan provider
-4. **Position Ownership**: Only vault should be able to operate on vaultPositionId
-5. **Sanity Checks**: Validate actual amounts match expected after each operation
+| Concern | Resolution |
+|---------|------------|
+| Slippage Protection | All swap operations have minimum output checks; `_enforceMinimumSlippage()` floor |
+| Reentrancy | `ReentrancyGuardUpgradeable`, `noConcurrentOperation`, CEI pattern on all paths |
+| Flash Loan Validation | State machine (Idle/Leverage/Deleverage), `initiator == address(this)` check |
+| Position Ownership | `onlyLeverager` modifier on all callbacks, `_requireSinglePosition()` |
+| Sanity Checks | Converter token consistency validated before every operation |
+| Inflation Attack | `_decimalsOffset() = 3` (1000 virtual shares) |
+| Emergency Recovery | `emergencySweepToken`, `emergencySweepETH`, `sweepUnknownPosition` |
+| Audit | Two rounds completed (Feb 2026), all MEDIUM+ findings fixed |
