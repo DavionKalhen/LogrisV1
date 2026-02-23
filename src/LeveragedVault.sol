@@ -66,6 +66,7 @@ contract LeveragedVault is
         bool operationInProgress;
         uint32 underlyingSlippageBasisPoints;
         uint32 debtSlippageBasisPoints;
+        mapping(address => bool) leverageWhitelist;
     }
 
     // keccak256(abi.encode(uint256(keccak256("logris.storage.LeveragedVault")) - 1)) & ~bytes32(uint256(0xff))
@@ -92,6 +93,10 @@ contract LeveragedVault is
     /// @param underlyingSlippageBps New slippage tolerance for underlying token operations.
     /// @param debtSlippageBps New slippage tolerance for debt token swaps.
     event SlippageParametersUpdated(uint32 underlyingSlippageBps, uint32 debtSlippageBps);
+    /// @notice Emitted when a leverage whitelist entry is updated.
+    /// @param account The address whose whitelist status changed.
+    /// @param approved Whether the address is now approved.
+    event LeverageWhitelistUpdated(address indexed account, bool approved);
     /// @notice Emitted when the owner sweeps an accidentally-sent ERC20 token.
     /// @param token The token address swept.
     /// @param amount The amount transferred.
@@ -169,6 +174,8 @@ contract LeveragedVault is
     error ETHTransferFailed();
     /// @dev Thrown when the transaction deadline has passed.
     error DeadlineExpired();
+    /// @dev Thrown when a non-whitelisted address calls leverage() or leverageAtomic().
+    error NotWhitelisted();
 
     // ============ Modifiers ============
 
@@ -190,6 +197,14 @@ contract LeveragedVault is
         $.operationInProgress = true;
         _;
         $.operationInProgress = false;
+    }
+
+    /// @notice Restricts leverage operations to whitelisted addresses.
+    /// @dev Only applies to leverage() and leverageAtomic(). depositAndLeverageAtomic() is exempt.
+    modifier onlyWhitelistedLeverager() {
+        LeveragedVaultStorage storage $ = _getLeveragedVaultStorage();
+        if (!$.leverageWhitelist[msg.sender]) revert NotWhitelisted();
+        _;
     }
 
     // ============ Constructor (locks implementation) ============
@@ -744,7 +759,6 @@ contract LeveragedVault is
     // ============ Leverage Functions ============
 
     /// @inheritdoc ILeveragedVault
-    /// @dev No access control — see ILeveragedVault for security implications.
     function leverage(
         uint256 clampedDeposit,
         uint256 flashLoanAmount,
@@ -752,7 +766,7 @@ contract LeveragedVault is
         uint256 mintAmount,
         uint256 debtTradeMin,
         uint256 deadline
-    ) external override whenNotPaused noConcurrentOperation {
+    ) external override whenNotPaused noConcurrentOperation onlyWhitelistedLeverager {
         if (deadline != 0 && block.timestamp > deadline) revert DeadlineExpired();
         _executeLeverage(clampedDeposit, flashLoanAmount, underlyingDepositMin, mintAmount, debtTradeMin);
     }
@@ -830,7 +844,7 @@ contract LeveragedVault is
         uint32 _underlyingSlippageBasisPoints,
         uint32 _debtSlippageBasisPoints,
         uint256 deadline
-    ) external override whenNotPaused noConcurrentOperation {
+    ) external override whenNotPaused noConcurrentOperation onlyWhitelistedLeverager {
         if (deadline != 0 && block.timestamp > deadline) revert DeadlineExpired();
         if (_underlyingSlippageBasisPoints >= BASIS_POINTS) revert SlippageTooHigh();
         if (_debtSlippageBasisPoints >= BASIS_POINTS) revert SlippageTooHigh();
@@ -1160,6 +1174,22 @@ contract LeveragedVault is
         $.underlyingSlippageBasisPoints = _underlyingSlippageBasisPoints;
         $.debtSlippageBasisPoints = _debtSlippageBasisPoints;
         emit SlippageParametersUpdated(_underlyingSlippageBasisPoints, _debtSlippageBasisPoints);
+    }
+
+    /// @notice Adds or removes an address from the leverage whitelist.
+    /// @param account The address to update.
+    /// @param approved True to whitelist, false to revoke.
+    function setLeverageWhitelist(address account, bool approved) external onlyOwner {
+        LeveragedVaultStorage storage $ = _getLeveragedVaultStorage();
+        $.leverageWhitelist[account] = approved;
+        emit LeverageWhitelistUpdated(account, approved);
+    }
+
+    /// @notice Returns whether an address is whitelisted for leverage operations.
+    /// @param account The address to check.
+    /// @return True if whitelisted.
+    function isLeverageWhitelisted(address account) external view returns (bool) {
+        return _getLeveragedVaultStorage().leverageWhitelist[account];
     }
 
     /// @notice Transfers accidentally-sent ERC20 tokens out of the vault.

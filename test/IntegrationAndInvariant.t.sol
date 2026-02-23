@@ -319,6 +319,8 @@ contract FullIntegrationTest is LogrisTestBase {
             address(swapper),
             owner
         );
+        vm.prank(owner);
+        vault2.setLeverageWhitelist(address(this), true);
 
         uint256 amount = 10 ether;
 
@@ -435,6 +437,76 @@ contract FullIntegrationTest is LogrisTestBase {
         assertGt(withdrawn, 0, "Should withdraw some underlying");
         assertApproxEqAbs(withdrawn, amount, amount / 10, "Should get back close to deposit");
         assertEq(vault.balanceOf(alice), 0, "Should have 0 shares after full withdrawal");
+    }
+
+    // ============ Leverage Whitelist Tests ============
+
+    function test_Leverage_RevertsWhenNotWhitelisted() public {
+        _depositFor(alice, 10 ether);
+
+        address stranger = makeAddr("stranger");
+        vm.prank(stranger);
+        vm.expectRevert(LeveragedVault.NotWhitelisted.selector);
+        vault.leverageAtomic(10 ether, 100, 200, 0);
+    }
+
+    function test_LeverageExplicit_RevertsWhenNotWhitelisted() public {
+        _depositFor(alice, 10 ether);
+
+        address stranger = makeAddr("stranger");
+        vm.prank(stranger);
+        vm.expectRevert(LeveragedVault.NotWhitelisted.selector);
+        vault.leverage(10 ether, 0, 10 ether, 1, 0, 0);
+    }
+
+    function test_DepositAndLeverageAtomic_WorksWithoutWhitelist() public {
+        // Stranger is NOT whitelisted, but depositAndLeverageAtomic should still work
+        address stranger = makeAddr("stranger");
+        uint256 amount = 10 ether;
+        underlying.mint(stranger, amount);
+
+        vm.startPrank(stranger);
+        IERC20(address(underlying)).approve(address(vault), amount);
+        uint256 shares = vault.depositAndLeverageAtomic(amount, 100, 200, 0);
+        vm.stopPrank();
+
+        assertGt(shares, 0, "Stranger should receive shares");
+        assertGt(vault.getVaultDebtBalance(), 0, "Should have debt from leverage");
+    }
+
+    function test_SetLeverageWhitelist_OnlyOwner() public {
+        vm.prank(alice);
+        vm.expectRevert();
+        vault.setLeverageWhitelist(alice, true);
+    }
+
+    function test_SetLeverageWhitelist_WorksForOwner() public {
+        address keeper = makeAddr("keeper");
+        assertEq(vault.isLeverageWhitelisted(keeper), false);
+
+        vm.prank(owner);
+        vault.setLeverageWhitelist(keeper, true);
+        assertEq(vault.isLeverageWhitelisted(keeper), true);
+
+        // Keeper can now leverage
+        _depositFor(alice, 10 ether);
+        vm.prank(keeper);
+        vault.leverageAtomic(10 ether, 100, 200, 0);
+        assertGt(vault.getVaultDebtBalance(), 0, "Keeper should have leveraged");
+    }
+
+    function test_SetLeverageWhitelist_Revoke() public {
+        // alice is whitelisted from setUp
+        assertEq(vault.isLeverageWhitelisted(alice), true);
+
+        vm.prank(owner);
+        vault.setLeverageWhitelist(alice, false);
+        assertEq(vault.isLeverageWhitelisted(alice), false);
+
+        _depositFor(alice, 10 ether);
+        vm.prank(alice);
+        vm.expectRevert(LeveragedVault.NotWhitelisted.selector);
+        vault.leverageAtomic(10 ether, 100, 200, 0);
     }
 }
 

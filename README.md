@@ -169,9 +169,9 @@ The leverage flow:
 6. Swap debt -> underlying to repay flash loan
 7. Return surplus to vault pool (benefits all shareholders)
 
-Both functions accept a `deadline` parameter (set to 0 to skip) for transaction expiry protection.
+All three functions accept a `deadline` parameter (set to 0 to skip) for transaction expiry protection.
 
-**Access control note:** `leverage()` has no access restriction -- any address can call it. See [Known Security Issues](#known-security-issues) for details and mitigations.
+**Access control:** `leverage()` and `leverageAtomic()` are restricted to whitelisted addresses via `onlyWhitelistedLeverager`. The owner manages the whitelist with `setLeverageWhitelist()`. `depositAndLeverageAtomic()` is exempt -- any user can deposit and leverage their own funds in one transaction.
 
 #### Withdrawing
 
@@ -214,6 +214,8 @@ All paths burn shares before external calls (CEI pattern). Withdrawals are **not
 |----------|-------------|
 | `pause()` / `unpause()` | Emergency pause deposits and leverage (withdrawals remain available) |
 | `setSlippageParameters(underlyingBps, debtBps)` | Update default slippage tolerance |
+| `setLeverageWhitelist(account, approved)` | Add/remove address from leverage whitelist |
+| `isLeverageWhitelisted(account)` | Check if address is whitelisted for leverage |
 | `emergencySweepToken(token, amount, recipient)` | Recover stuck ERC20 tokens (blocks underlying and yield token) |
 | `emergencySweepETH(recipient)` | Recover stuck ETH |
 | `sweepUnknownPosition(tokenId, to)` | Transfer an unexpected position NFT out (griefing recovery) |
@@ -384,22 +386,6 @@ The deleverage path is fully deterministic -- no DEX swap needed.
 
 ### Open Issues
 
-#### `leverage()` has no access control [MEDIUM -- Mitigated]
-
-Anyone can call `leverage()` with parameters of their choosing to leverage the vault's pooled deposits. The vault enforces a minimum slippage floor via `_enforceMinimumSlippage()` to bound the worst-case loss per operation, but an attacker could still:
-
-- Leverage at unfavorable (but within-tolerance) slippage
-- Trigger leverage at inopportune market times
-
-**Mitigations in place:**
-- **Surplus routing to vault:** The leverager sends any debt-swap surplus back to the vault pool (not the caller), eliminating the economic incentive for external callers to extract value
-- `_enforceMinimumSlippage()` enforces `debtTradeMin >= mintAmount * (10000 - debtSlippageBps) / 10000`
-- `deadline` parameter prevents stale transactions from executing
-- `whenNotPaused` allows the owner to halt leverage operations
-- The vault's pool balance limits the deposit amount available to leverage
-
-**Why kept permissionless:** Adding access control (e.g., `onlyOwner`) would centralize the leverage trigger, creating a single point of failure. The current design allows any keeper or automation to maintain the position. With surplus routed to the vault, callers cannot profit from the operation -- the worst case is bounded slippage loss within the configured tolerance.
-
 #### Immutable adapter addresses [MEDIUM]
 
 Each vault's `converter`, `flashLoanAdapter`, and `swapper` are set at initialization and cannot be changed. If an adapter is compromised, deprecated, or needs upgrading, the only recourse is to deploy a new vault and migrate users.
@@ -454,7 +440,7 @@ The codebase has undergone two rounds of professional security audit (2026-02-07
 
 | ID | Severity | Finding | Status |
 |----|----------|---------|--------|
-| S-01 | HIGH→MED | `leverage()` has no access control | Mitigated (surplus → vault, see above) |
+| S-01 | HIGH→MED | `leverage()` has no access control | **Fixed** (whitelist + surplus → vault) |
 | S-02 | MEDIUM | Path 3 over-withdraws when pool balance > 0 | **Fixed** |
 | S-03 | MEDIUM | CEI violation: shares burned after external calls | **Fixed** (all paths) |
 | S-04 | MEDIUM | Position creation griefing via NFT transfer | **Fixed** |
@@ -474,7 +460,8 @@ The codebase has undergone two rounds of professional security audit (2026-02-07
 |-----------|-------------|
 | **ERC4626 inflation protection** | `_decimalsOffset() = 3` adds 1000 virtual shares, requiring ~1000x the victim's deposit to execute an inflation attack |
 | **Leverage surplus to vault** | Debt-swap surplus during leverage is routed to the vault pool, not the caller, preventing value extraction |
-| **Slippage enforcement floor** | `_enforceMinimumSlippage()` prevents callers from passing unreasonably low `debtTradeMin`, even when `leverage()` has no access control |
+| **Leverage whitelist** | `leverage()` and `leverageAtomic()` restricted to whitelisted addresses; `depositAndLeverageAtomic()` exempt (users deposit their own funds) |
+| **Slippage enforcement floor** | `_enforceMinimumSlippage()` prevents callers from passing unreasonably low `debtTradeMin` |
 | **CEI pattern** | All three withdrawal paths burn shares before making external calls |
 | **Reentrancy protection** | `nonReentrant` on callback functions and adapters, `noConcurrentOperation` on vault entry points |
 | **Flash loan state machine** | V3Leverager uses `Idle/Leverage/DeleverageRepay` states with EIP-1153 transient storage |
@@ -518,7 +505,7 @@ Compiler: Solidity 0.8.28 with `via_ir = true` and `optimizer_runs = 200`.
 ### Running Tests
 
 ```bash
-# Run all non-fork tests (344 tests, no RPC required)
+# Run all non-fork tests (360 tests, no RPC required)
 forge test --no-match-path "test/*{Fork,EdgeCases}*"
 
 # Run with verbose output
@@ -547,7 +534,7 @@ forge test -vv
 
 ### Test Suite Summary
 
-**354 non-fork tests passing** across 26 test suites.
+**360 non-fork tests passing** across 26 test suites.
 
 | Category | Test Contract | Description |
 |----------|--------------|-------------|

@@ -161,13 +161,7 @@ interface ILeveragedVault is IERC4626 {
 
     /// @notice Execute leverage with explicit parameters.
     /// @dev Parameters should be obtained from getLeverageParameters().
-    ///
-    ///      SECURITY NOTE: This function has no access control. Any address can call it
-    ///      to leverage the vault's pooled deposits. The _enforceMinimumSlippage check
-    ///      provides a floor on swap terms (the vault's configured debtSlippageBasisPoints),
-    ///      but a malicious caller can still leverage at that floor rather than optimal terms.
-    ///      Consider restricting to an operator role before mainnet deployment if this risk
-    ///      is unacceptable.
+    ///      Restricted to whitelisted addresses via onlyWhitelistedLeverager.
     /// @param clampedDeposit Amount of underlying to deposit from pool
     /// @param flashLoanAmount Amount to flash loan
     /// @param underlyingDepositMin Minimum yield tokens from deposit (slippage protection)
@@ -185,7 +179,7 @@ interface ILeveragedVault is IERC4626 {
 
     /// @notice Execute leverage with auto-computed parameters.
     /// @dev Convenience function that computes parameters internally.
-    ///      Same access control note as leverage() — callable by any address.
+    ///      Restricted to whitelisted addresses via onlyWhitelistedLeverager.
     /// @param depositAmount Amount of underlying to leverage
     /// @param underlyingSlippageBasisPoints Slippage tolerance for underlying operations
     /// @param debtSlippageBasisPoints Slippage tolerance for debt swap
@@ -196,6 +190,18 @@ interface ILeveragedVault is IERC4626 {
         uint32 debtSlippageBasisPoints,
         uint256 deadline
     ) external;
+
+    // ============ Admin Functions ============
+
+    /// @notice Adds or removes an address from the leverage whitelist.
+    /// @param account The address to update.
+    /// @param approved True to whitelist, false to revoke.
+    function setLeverageWhitelist(address account, bool approved) external;
+
+    /// @notice Returns whether an address is whitelisted for leverage operations.
+    /// @param account The address to check.
+    /// @return True if whitelisted.
+    function isLeverageWhitelisted(address account) external view returns (bool);
 
     // ============ Deposit + Leverage Functions ============
 

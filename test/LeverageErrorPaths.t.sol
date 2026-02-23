@@ -79,6 +79,8 @@ contract LeverageErrorPathTest is LogrisTestBase {
             address(swapper),
             owner
         );
+        vm.prank(owner);
+        lossyVault.setLeverageWhitelist(alice, true);
 
         underlying.mint(alice, 10 ether);
         vm.startPrank(alice);

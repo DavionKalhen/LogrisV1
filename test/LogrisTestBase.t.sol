@@ -159,6 +159,10 @@ abstract contract LogrisTestBase is LocalAlchemistV3Base {
         leverager.setConverterApproval(address(converter), true);
         leverager.setFlashLoanAdapterApproval(address(flashLoanAdapter), true);
         leverager.setSwapperApproval(address(swapper), true);
+        // Whitelist test contract and test users for leverage operations
+        vault.setLeverageWhitelist(address(this), true);
+        vault.setLeverageWhitelist(alice, true);
+        vault.setLeverageWhitelist(bob, true);
         vm.stopPrank();
     }
 

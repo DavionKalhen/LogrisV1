@@ -1588,6 +1588,8 @@ contract Round2AuditFixTest is LogrisTestBase {
             address(converter), address(flashLoanAdapter), address(swapper),
             address(underlying), owner
         );
+        vm.prank(owner);
+        zeroSlipVault.setLeverageWhitelist(alice, true);
 
         underlying.mint(alice, 10 ether);
         vm.startPrank(alice);
@@ -1625,6 +1627,8 @@ contract Round2AuditFixTest is LogrisTestBase {
             address(converter), address(flashLoanAdapter), address(feeSwapper),
             address(underlying), owner
         );
+        vm.prank(owner);
+        zeroSlipVault.setLeverageWhitelist(alice, true);
 
         underlying.mint(alice, 10 ether);
         vm.startPrank(alice);
