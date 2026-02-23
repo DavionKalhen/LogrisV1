@@ -1,6 +1,6 @@
 # Alchemix V3 Integration Guide
 
-This document explains how Logris V1 integrates with Alchemix V3 to create leveraged yield positions. It covers the callback architecture, adapter system, and how to extend the system for new token pairs.
+This document explains how Logris V1 integrates with Alchemix V3 to create leveraged yield positions. It covers the callback architecture, adapter system, leverage and deleverage flows, and how to extend the system for new token pairs.
 
 ## Table of Contents
 
@@ -9,12 +9,11 @@ This document explains how Logris V1 integrates with Alchemix V3 to create lever
 3. [Callback Pattern](#callback-pattern)
 4. [Adapter System](#adapter-system)
 5. [Leverage Flow (Step by Step)](#leverage-flow-step-by-step)
-6. [Deleverage Flow (Step by Step)](#deleverage-flow-step-by-step)
+6. [Deleverage Flow (Repay-Based)](#deleverage-flow-repay-based)
 7. [Flash Loan Amount Calculation](#flash-loan-amount-calculation)
 8. [Creating New Vault Types](#creating-new-vault-types)
-9. [V2 vs V3 Differences](#v2-vs-v3-differences)
-10. [Initialization Parameters](#initialization-parameters)
-11. [Related Tests](#related-tests)
+9. [Initialization Parameters](#initialization-parameters)
+10. [Related Tests](#related-tests)
 
 ---
 
@@ -28,22 +27,22 @@ LeveragedVault (ERC4626, EIP-1167 clone)
   |  Owns single AlchemistV3 position NFT
   |  Manages deposit pool + leveraged position
   |
-  |--- leverage() / withdrawUnderlying() --->  V3Leverager (shared)
+  |--- leverage() / withdrawUnderlying() --->  V3Leverager (shared, 520 LOC)
   |                                               |
-  |<-- callbacks (deposit/mint/withdraw/burn) ----+
+  |<-- callbacks (deposit/mint/withdraw/repay) ---+
   |                                               |
   |                                    +----------+-----------+
   |                                    |          |           |
   |                              Converter  FlashLoan    Swapper
   |                            (ITokenConv) (IFlashLoan) (ISwapper)
   |                                    |          |           |
-  |                              WETH<->wstETH  Balancer  alETH<->WETH
-  |                              (via Lido)     Aave V3   (via Curve)
-  v                                             Euler
+  |                              WETH<->MYT    Balancer  alETH<->WETH
+  |                              (via VaultV2) Aave V3   (via Curve)
+  v                                            Euler
 AlchemistV3
   |
   +-- Position NFT (ERC-721)
-  +-- Collateral (yield tokens, e.g., wstETH)
+  +-- Collateral (yield tokens, e.g., MYT)
   +-- Debt (debt tokens, e.g., alETH)
   +-- Earmarked collateral (committed to transmuter)
 ```
@@ -51,8 +50,9 @@ AlchemistV3
 The system is designed so that:
 - **One leverager serves all vaults.** V3Leverager is deployed once and shared.
 - **Adapters are approved via registry.** The leverager owner approves converters, flash loan adapters, and swappers. No redeployment needed.
-- **Each vault binds to one adapter set.** At initialization, each vault is permanently linked to a specific converter, flash loan adapter, and swapper.
+- **Each vault binds to one adapter set.** At initialization, each vault is permanently linked to a specific converter, flash loan adapter, and swapper. These are immutable.
 - **All depositors share one position.** Each vault holds a single AlchemistV3 position NFT. Share value tracks the net position value.
+- **EIP-1153 transient storage.** The leverager stores flash loan context in transient storage, saving ~20k gas per operation and eliminating stale-state risks.
 
 ---
 
@@ -62,7 +62,7 @@ Alchemix V3 uses **NFT-based positions** (ERC-721). Each position has:
 
 | Field | Description |
 |-------|-------------|
-| `collateral` | Yield tokens deposited (e.g., wstETH amount) |
+| `collateral` | Yield tokens deposited (e.g., MYT amount) |
 | `debt` | Debt tokens owed (e.g., alETH amount) |
 | `earmarked` | Collateral committed to the Alchemist transmuter |
 
@@ -71,21 +71,22 @@ Query a position:
 (uint256 collateral, uint256 debt, uint256 earmarked) = alchemist.getCDP(positionId);
 ```
 
-Key Alchemist V3 functions used by the vault:
+Key Alchemist V3 functions used by Logris:
 
 | Function | Purpose |
 |----------|---------|
 | `deposit(amount, recipient, recipientId)` | Deposit yield tokens. Pass `recipientId = 0` to create a new position. |
 | `withdraw(amount, recipient, tokenId)` | Withdraw yield tokens from a position. |
-| `mintFrom(tokenId, amount, recipient)` | Mint debt tokens against collateral. Requires `approveMint()`. |
-| `burn(amount, recipientId)` | Burn debt tokens to reduce position debt. |
+| `mint(tokenId, amount, recipient)` | Mint debt tokens against collateral. |
 | `approveMint(tokenId, spender, amount)` | Authorize an address to mint from a position. |
+| `repay(tokenId, amount)` | Repay debt using yield tokens (MYT). Used during deleverage. |
+| `poke(tokenId)` | Sync accrued yield on a position. Called before share calculations. |
 | `getCDP(tokenId)` | Query position state (collateral, debt, earmarked). |
 | `getMaxBorrowable(tokenId)` | Get remaining borrow capacity. |
 | `convertYieldTokensToUnderlying(amount)` | Convert yield token amount to underlying value. |
 | `convertUnderlyingTokensToYield(amount)` | Convert underlying amount to yield token equivalent. |
-| `normalizeDebtTokensToUnderlying(amount)` | Convert debt token amount to underlying value. |
-| `minimumCollateralization()` | Get required collateral ratio (e.g., 1.11e18 = 111%). |
+| `normalizeUnderlyingTokensToDebt(amount)` | Convert underlying amount to debt token value. |
+| `minimumCollateralization()` | Get required collateral ratio (e.g., 1.111e18 = 111%). |
 | `depositCap()` / `getTotalDeposited()` | Global deposit limits. |
 
 ---
@@ -94,23 +95,45 @@ Key Alchemist V3 functions used by the vault:
 
 The vault implements `ILeveragedVaultCallback` to let the leverager interact with its AlchemistV3 position. This is the core architectural pattern: **the leverager never directly touches the Alchemist**. Instead, it calls back into the vault, which performs the privileged operation on its own position.
 
+### Leverage Callback Sequence
+
 ```
 V3Leverager                                  LeveragedVault
     |                                              |
     |  1. Takes flash loan                         |
-    |  2. Converts underlying -> yield             |
+    |  2. Converts underlying -> MYT               |
     |                                              |
     |--- vaultDepositYieldTokens(amount) --------->|
     |                                              |-- alchemist.deposit(amount, self, positionId)
     |<-- returns sharesAdded ----------------------|
     |                                              |
     |--- vaultMintDebtTokens(amount, recipient) -->|
-    |                                              |-- alchemist.approveMint(positionId, leverager, amount)
-    |                                              |-- alchemist.mintFrom(positionId, amount, recipient)
+    |                                              |-- alchemist.mint(positionId, amount, recipient)
     |<--------------------------------------------|
     |                                              |
     |  3. Swaps debt -> underlying                 |
     |  4. Repays flash loan                        |
+```
+
+### Deleverage Callback Sequence
+
+```
+V3Leverager                                  LeveragedVault
+    |                                              |
+    |  1. Takes flash loan                         |
+    |  2. Converts underlying -> MYT               |
+    |                                              |
+    |--- vaultRepayWithYieldTokens(amount) ------->|
+    |                                              |-- alchemist.repay(positionId, amount)
+    |<-- returns amountRepaid --------------------|
+    |                                              |
+    |--- vaultWithdrawYieldTokens(amount, self) -->|
+    |                                              |-- alchemist.withdraw(amount, self, positionId)
+    |<-- returns actualWithdrawn -----------------|
+    |                                              |
+    |  3. Converts freed MYT -> underlying         |
+    |  4. Repays flash loan                        |
+    |  5. Surplus -> user                          |
 ```
 
 ### Callback Functions
@@ -122,14 +145,14 @@ interface ILeveragedVaultCallback {
     function vaultDepositYieldTokens(uint256 amount) external returns (uint256 sharesAdded);
 
     /// @notice Mint debt tokens from vault's AlchemistV3 position
-    /// @dev Vault calls approveMint() then leverager calls mintFrom()
     function vaultMintDebtTokens(uint256 amount, address recipient) external;
 
     /// @notice Withdraw yield tokens from vault's AlchemistV3 position
     function vaultWithdrawYieldTokens(uint256 amount, address recipient) external returns (uint256 actualWithdrawn);
 
-    /// @notice Burn debt tokens against vault's AlchemistV3 position
-    function vaultBurnDebtTokens(uint256 amount) external;
+    /// @notice Repay debt using yield tokens (MYT) via AlchemistV3.repay()
+    /// @dev Cannot be called in the same block as vaultMintDebtTokens (CannotRepayOnMintBlock).
+    function vaultRepayWithYieldTokens(uint256 amount) external returns (uint256 amountRepaid);
 
     /// @notice Get vault's position ID
     function getVaultPositionId() external view returns (uint256 positionId);
@@ -140,7 +163,7 @@ All callbacks are protected by the `onlyLeverager` modifier -- only the vault's 
 
 ### Why Callbacks?
 
-1. **Position ownership**: Only the vault owns its position NFT. The leverager cannot directly deposit/mint/withdraw/burn.
+1. **Position ownership**: Only the vault owns its position NFT. The leverager cannot directly deposit/mint/withdraw/repay.
 2. **Security**: The vault validates each callback operation internally.
 3. **Separation of concerns**: The leverager handles orchestration (flash loans, swaps), the vault handles position management.
 4. **Reusability**: One leverager works with many vaults without needing position access.
@@ -168,9 +191,10 @@ interface ITokenConverter {
 }
 ```
 
-**Current implementation:** `WETHToWstETHConverter` (205 LOC)
-- `toYield`: WETH -> unwrap to ETH -> stETH via `Lido.submit()` -> wstETH via `wstETH.wrap()`
-- `toUnderlying`: wstETH -> stETH via `wstETH.unwrap()` -> ETH via Curve stETH/ETH pool -> WETH via `WETH.deposit()`
+**Current implementation:** `MYTConverter` (90 LOC)
+- `toYield`: WETH -> VaultV2.deposit() -> MYT shares
+- `toUnderlying`: MYT shares -> VaultV2.redeem() -> WETH
+- Fully deterministic -- no DEX interaction, no external market slippage. VaultV2 deposit/redeem are ERC4626 accounting operations.
 
 The leverager validates that `converter.yieldToken()` and `converter.underlyingToken()` match the vault's tokens before every operation.
 
@@ -205,7 +229,7 @@ All adapters share:
 
 ### ISwapper
 
-Swaps between debt tokens and underlying tokens.
+Swaps between debt tokens and underlying tokens. Used only during leverage (not deleverage -- see below).
 
 ```solidity
 interface ISwapper {
@@ -223,7 +247,7 @@ interface ISwapper {
 }
 ```
 
-**Current implementation:** `CurveSwapper` (283 LOC)
+**Current implementation:** `CurveSwapper` (288 LOC)
 - Swaps between alETH and WETH via Curve's alETH/ETH pool
 - Supports both ETH-native and ERC20 pool variants
 - Configurable pool indices for different Curve pool layouts
@@ -241,32 +265,29 @@ leverager.setSwapperApproval(address(curveSwapper), true);
 leverager.batchApprove(converters, flashLoanAdapters, swappers);
 ```
 
-Every leverage/deleverage operation validates that all three adapters are approved before proceeding:
-```
-if (!isApprovedConverter(params.converter)) revert UnapprovedConverter();
-if (!isApprovedFlashLoanAdapter(params.flashLoanAdapter)) revert UnapprovedFlashLoanAdapter();
-if (!isApprovedSwapper(params.swapper)) revert UnapprovedSwapper();
-```
+Every leverage/deleverage operation validates that adapters are approved before proceeding.
 
 ---
 
 ## Leverage Flow (Step by Step)
 
-When a user calls `vault.leverage()` or `vault.leverageAtomic()`:
+Entry points: `vault.leverage()`, `vault.leverageAtomic()`, or `vault.depositAndLeverageAtomic()`.
+
+Access control: `leverage()` and `leverageAtomic()` are restricted to whitelisted addresses via `onlyWhitelistedLeverager`. `depositAndLeverageAtomic()` is exempt -- any user can deposit and leverage their own funds.
 
 ### 1. Vault prepares the operation
 
 ```
-vault.leverage(clampedDeposit, flashLoanAmount, underlyingDepositMin, mintAmount, debtTradeMin)
+vault._executeLeverage(clampedDeposit, flashLoanAmount, underlyingDepositMin, mintAmount, debtTradeMin)
 ```
 
+- Syncs Alchemist position via `poke()` to reflect accrued yield
 - Validates pool has enough underlying balance (`clampedDeposit <= poolBalance`)
 - Enforces minimum slippage floor on `debtTradeMin` via `_enforceMinimumSlippage()`
-- Sets `operationInProgress = true` to prevent concurrent operations
-- Transfers `clampedDeposit` of underlying to the converter
-- Converts underlying -> yield tokens via converter
-- Deposits yield tokens to the vault contract (for leverager to use in callback)
-- Calls `leverager.leverage(params)` with the vault's adapter addresses
+- Converts `clampedDeposit` of underlying -> MYT via converter
+- Validates `mintAmount` does not exceed available + new borrow capacity
+- Approves the leverager to pull MYT and mint debt
+- Calls `leverager.leverage(params)`
 
 ### 2. Leverager orchestrates the flash loan
 
@@ -274,26 +295,28 @@ vault.leverage(clampedDeposit, flashLoanAmount, underlyingDepositMin, mintAmount
 V3Leverager.leverage(LeverageParams params)
 ```
 
-- Validates all three adapters are approved in the registry
+- Validates `msg.sender == params.vault` (only vaults can call)
+- Validates all adapters are approved in the registry
 - Validates converter tokens match vault's yield/underlying tokens
+- Pulls the vault's MYT deposit
+- Stores operation context in EIP-1153 transient storage
 - Sets state to `FlashLoanState.Leverage`
-- Stores operation context in `_context`
-- Calls `flashLoanAdapter.flashLoan(underlyingToken, flashLoanAmount, self, data)`
+- If `flashLoanAmount > 0`: calls `flashLoanAdapter.flashLoan()`
+- If `flashLoanAmount == 0`: calls `_executeLeverageLogic()` directly
 
-### 3. Flash loan callback executes
+### 3. Core leverage logic executes
 
-```
-V3Leverager.onFlashLoanReceived(token, amount, fee, data)
-```
+Whether called from the flash loan callback or directly:
 
-- Validates `msg.sender == flashLoanAdapter` and `initiator == address(this)`
-- Validates state is `FlashLoanState.Leverage`
-- Converts flash-loaned underlying -> yield tokens via converter
-- Calls `vault.vaultDepositYieldTokens(yieldAmount)` -- vault deposits to AlchemistV3
-- Calls `vault.vaultMintDebtTokens(mintAmount, self)` -- vault mints debt tokens
-- Swaps debt tokens -> underlying via swapper
-- Repays flash loan (principal + fee)
-- Returns surplus underlying to caller
+1. Convert flash-loaned underlying -> MYT via converter (if flash loan > 0)
+2. Combine with vault's MYT deposit
+3. Call `vault.vaultDepositYieldTokens(totalMYT)` -> vault deposits to AlchemistV3
+4. If `mintAmount > 0`:
+   - Call `vault.vaultMintDebtTokens(mintAmount, self)` -> vault mints alETH
+   - Swap alETH -> WETH via swapper
+   - Repay flash loan from swap proceeds
+   - Send surplus WETH to vault pool
+5. If `mintAmount == 0`: deposit-only mode -- collateral is deposited with no debt (graceful degradation when Alchemist deposit capacity is limited)
 
 ### 4. Share minting
 
@@ -301,9 +324,11 @@ Shares are minted to the user during `depositUnderlying()`, **not during leverag
 
 ---
 
-## Deleverage Flow (Step by Step)
+## Deleverage Flow (Repay-Based)
 
-When a user calls `vault.withdrawUnderlying()` and deleveraging is needed (Path 3):
+When a user calls `vault.withdrawUnderlying()` and deleveraging is needed (Path 3).
+
+The deleverage path is **repay-based**: it uses `AlchemistV3.repay()` with yield tokens (MYT) to reduce debt, rather than swapping underlying to debt tokens and burning. This makes the entire deleverage path deterministic through VaultV2 deposit/redeem -- no DEX swap is needed during withdrawal.
 
 ### 1. Vault determines withdrawal path
 
@@ -311,42 +336,50 @@ Three paths exist based on available liquidity:
 
 | Path | Condition | Action |
 |------|-----------|--------|
-| **Path 1** | Pool balance >= withdrawal amount | Direct transfer, no Alchemist interaction |
-| **Path 2** | Pool + free Alchemist collateral sufficient, no debt to burn | Withdraw from Alchemist, convert yield -> underlying |
-| **Path 3** | Must deleverage (burn debt to free collateral) | Full flash loan deleverage cycle |
+| **Path 1** | Pool balance >= withdrawal amount | Direct transfer from pool, no Alchemist interaction |
+| **Path 2** | Pool + free Alchemist collateral sufficient | Withdraw MYT from Alchemist, convert to underlying |
+| **Path 3** | Must deleverage (repay debt to free collateral) | Full flash loan deleverage cycle |
 
-### 2. Path 3: Full deleverage
+### 2. Path 3: Repay-based deleverage
 
 ```
-vault.withdrawUnderlying(shares, flashLoanAmount, burnAmount, minUnderlyingOut)
+vault.withdrawUnderlying(shares, flashLoanAmount, repayAmount, minUnderlyingOut, deadline)
 ```
 
 - Burns shares **before** any external calls (CEI pattern)
-- Subtracts pool balance from the needed underlying amount
-- Transfers pool balance portion directly to the user
-- Calls `leverager.deleverage(params)` for the remainder
+- Transfers pool balance portion directly to the user (if any)
+- Calls `leverager.deleverageRepay(params)` for the remainder
 
 ### 3. Leverager orchestrates deleverage
 
 ```
-V3Leverager.deleverage(DeleverageParams params)
+V3Leverager.deleverageRepay(DeleverageRepayParams params)
 ```
 
-- Sets state to `FlashLoanState.Deleverage`
+- Validates `msg.sender == params.vault` (only vaults can call)
+- Sets state to `FlashLoanState.DeleverageRepay`
 - Takes flash loan of underlying tokens
-- In callback:
-  1. Swaps underlying -> debt tokens via swapper
-  2. Calls `vault.vaultBurnDebtTokens(burnAmount)` -- burns only `burnAmount`, surplus debt tokens go to user
-  3. Calls `vault.vaultWithdrawYieldTokens(withdrawAmount, self)` -- withdraws freed collateral
-  4. Converts yield -> underlying via converter
-  5. Repays flash loan
-  6. Sends remaining underlying to the user
+
+In the flash loan callback:
+
+1. **Convert** flash-loaned WETH -> MYT via converter (deterministic, VaultV2 deposit)
+2. **Repay** debt with MYT: `vault.vaultRepayWithYieldTokens(repayAmount)` -> calls `alchemist.repay(positionId, repayAmount)`
+3. **Withdraw** freed collateral (MYT): `vault.vaultWithdrawYieldTokens(withdrawAmount, self)`
+4. **Convert** all MYT (withdrawn + any conversion surplus) -> WETH via converter (deterministic, VaultV2 redeem)
+5. **Repay** flash loan from converted WETH
+6. **Send** surplus WETH to user
+
+### Why repay-based?
+
+- **No DEX swap needed.** The entire path uses VaultV2 deposit/redeem for conversions, which are deterministic ERC4626 operations. No Curve/Uniswap swap means no swap slippage risk during withdrawal.
+- **Simpler parameter calculation.** The vault can compute exact amounts upfront since there is no market-dependent swap step.
+- **AlchemistV3 constraint:** `repay()` cannot be called in the same block as `mint()` (CannotRepayOnMintBlock). The vault enforces this separation.
 
 ---
 
 ## Flash Loan Amount Calculation
 
-The vault computes optimal flash loan amounts based on slippage tolerances and the Alchemist's collateralization ratio.
+The vault computes optimal flash loan amounts in `_calculateFlashLoanAmount()` based on slippage tolerances and the Alchemist's collateralization ratio.
 
 ### Formula
 
@@ -363,8 +396,8 @@ flashLoanAmount = (totalTradeLoss * depositAmount
 
 The flash loan amount is the largest loan the vault can take out and fully repay from the minted debt, accounting for:
 
-1. **Underlying slippage**: Loss converting WETH -> wstETH (e.g., 1% via Lido)
-2. **Debt slippage**: Loss swapping alETH -> WETH (e.g., 4% via Curve, includes peg deviation)
+1. **Underlying slippage**: Loss converting WETH -> MYT (typically ~0% via VaultV2, but configured for safety)
+2. **Debt slippage**: Loss swapping alETH -> WETH (e.g., 2-4% via Curve, includes peg deviation)
 3. **Collateralization ratio**: Required overcollateralization (e.g., 111%)
 4. **Existing borrow capacity**: Pre-existing free collateral can absorb more flash loan
 
@@ -372,14 +405,17 @@ The flash loan fee is NOT pre-added to the amount. The leverager handles fee rep
 
 ### Capacity Clamping
 
-If the total deposit (user amount + flash loan) would exceed the Alchemist's deposit capacity, the vault clamps the amounts:
+If the total deposit (user amount + flash loan) would exceed the Alchemist's deposit capacity, the flash loan is clamped:
 
 ```solidity
+uint256 expectedYieldFromTotal = alchemist.convertUnderlyingTokensToYield(depositAmount + flashLoanAmount);
 if (expectedYieldFromTotal > depositCapacity) {
-    // Reduce to fit within capacity
-    flashLoanAmount = convertYieldTokensToUnderlying(depositCapacity - expectedYieldFromDeposit);
+    uint256 maxUnderlying = alchemist.convertYieldTokensToUnderlying(depositCapacity);
+    flashLoanAmount = maxUnderlying > depositAmount ? maxUnderlying - depositAmount : 0;
 }
 ```
+
+When deposit capacity is smaller than the requested deposit itself (`depositCapacity <= expectedYieldFromDeposit`), the deposit is clamped to fit and `mintAmount` is set to zero. The leverager deposits the collateral without minting any debt -- a deposit-only mode that allows a future leverage call to mint debt once capacity opens up.
 
 ---
 
@@ -392,7 +428,7 @@ The system is designed to support any Alchemist V3 deployment. To add a new vaul
 | Token | Role | Example (ETH) | Example (USD) |
 |-------|------|---------------|---------------|
 | Underlying | User deposits | WETH | DAI |
-| Yield | Alchemist collateral | wstETH | yvDAI |
+| Yield | Alchemist collateral | MYT (VaultV2 shares of wstETH) | yvDAI |
 | Debt | Alchemist mints | alETH | alUSD |
 
 ### Step 2: Implement a Token Converter
@@ -469,7 +505,7 @@ leverager.setConverterApproval(address(daiToYvDaiConverter), true);
 leverager.setSwapperApproval(address(alUsdSwapper), true);
 // Flash loan adapter may already be approved if reusing Balancer/Aave
 
-// 2. Create vault via factory (onlyOwner)
+// 2. Create vault via factory
 address vault = factory.createVault(
     address(yvDAI),                  // yield token
     address(DAI),                    // underlying token
@@ -480,11 +516,14 @@ address vault = factory.createVault(
     address(daiToYvDaiConverter),    // new converter
     address(balancerAdapter),        // existing flash loan adapter
     address(alUsdSwapper),           // new swapper
-    address(WETH)                    // WETH contract address (always WETH, used for ETH deposit wrapping)
+    address(WETH)                    // WETH contract address
 );
+
+// 3. Whitelist keepers for leverage operations
+LeveragedVault(vault).setLeverageWhitelist(keeper, true);
 ```
 
-Note: `createVault` is restricted to the factory owner (`onlyOwner`). The last parameter is always the WETH contract address regardless of the vault's underlying token -- it is used for the `depositUnderlying()` payable function's ETH wrapping logic.
+`createVault` is restricted to the factory owner. The WETH parameter is always the WETH contract address regardless of the vault's underlying token -- it is used for the `depositUnderlying()` payable function's ETH wrapping logic.
 
 ### Step 6: Verify
 
@@ -505,34 +544,13 @@ Before using the vault, verify:
 
 ---
 
-## V2 vs V3 Differences
-
-| Feature | Alchemix V2 | Alchemix V3 |
-|---------|------------|------------|
-| Position model | Account-based (keyed on address) | NFT-based (ERC-721 token IDs) |
-| Position ID | `msg.sender` address | `uint256 tokenId` |
-| Multiple positions | One per yield token per address | Unlimited per address |
-| Deposit function | `depositUnderlying(yieldToken, amount, recipient, minOut)` -- Alchemist converts | `deposit(amount, recipient, recipientId)` -- caller provides yield tokens |
-| Withdraw function | `withdrawUnderlyingFrom(owner, yieldToken, shares, recipient, minOut)` | `withdraw(amount, recipient, tokenId)` -- returns yield tokens |
-| Mint authorization | `approveMint(spender, amount)` | `approveMint(tokenId, spender, amount)` |
-| Mint function | `mintFrom(owner, amount, recipient)` | `mintFrom(tokenId, amount, recipient)` |
-| Burn function | `burn(amount, recipient)` | `burn(amount, recipientId)` |
-| Capacity query | `getYieldTokenParameters(yieldToken)` | `depositCap()` + `getTotalDeposited()` |
-| Borrow capacity | Calculated from collateralization ratio | `getMaxBorrowable(tokenId)` |
-| Collateral units | Shares (internal accounting) | Yield tokens directly |
-| Conversion | `convertSharesToUnderlyingTokens(yieldToken, shares)` | `convertYieldTokensToUnderlying(amount)` |
-
-**Key implication for Logris:** In V3, the leverage flow must convert WETH to wstETH **before** depositing to the Alchemist (V2 handled conversion internally). This is why the converter adapter exists.
-
----
-
 ## Initialization Parameters
 
 ### LeveragedVault (deployed via factory clone + initialize)
 
 ```solidity
 vault.initialize(
-    address yieldToken_,                    // Yield token (e.g., wstETH)
+    address yieldToken_,                    // Yield token (e.g., MYT / VaultV2 shares)
     address underlyingTokenAddress,         // Underlying token (e.g., WETH)
     address _alchemist,                     // AlchemistV3 contract
     address _leverager,                     // V3Leverager contract
@@ -546,7 +564,7 @@ vault.initialize(
 )
 ```
 
-The factory validates all addresses are non-zero and have deployed bytecode, and checks slippage < 10,000 bps.
+The factory validates all addresses are non-zero and have deployed bytecode, validates converter token consistency (yield/underlying must match), and checks slippage < 10,000 bps.
 
 ### V3Leverager
 
@@ -558,20 +576,55 @@ V3Leverager(address _owner)  // Owner for adapter registry management
 
 ## Related Tests
 
+**363 non-fork tests** across 19 test contracts, using real AlchemistV3 (no mocks).
+
 | Test File | Description |
 |-----------|-------------|
-| `test/IntegrationAndInvariant.t.sol` | Full deposit -> leverage -> withdraw cycle, share value invariants |
-| `test/V3LeveragerModular.t.sol` | V3Leverager unit tests with mocks: registry, leverage, deleverage |
-| `test/V3LeveragerE2E.t.sol` | E2E tests on mainnet fork with real AlchemistV3 + Curve |
-| `test/AdapterUnit.t.sol` | WstETHAdapter, WETHToWstETHConverter, AaveV3FlashLoan unit tests |
-| `test/SecurityTests.t.sol` | Callback spoofing, slippage enforcement, reentrancy tests |
-| `test/AuditCoverage.t.sol` | Regression tests for all audit findings (S-02 through S-06) |
-| `test/DeleverageUnit.t.sol` | Deleverage path unit tests |
-| `test/LeverageErrorPaths.t.sol` | Leverage error path coverage |
-| `test/FuzzTests.t.sol` | Fuzz tests for share math + flash loan bounds |
+| `IntegrationAndInvariant.t.sol` | Full deposit -> leverage -> withdraw cycle, deposit+leverage atomic, whitelist, share value invariants |
+| `V3LeveragerModular.t.sol` | V3Leverager unit tests: registry, leverage, deleverage, state machine |
+| `AdapterUnit.t.sol` | WstETHAdapter, MYTConverter, AaveV3FlashLoan adapter units |
+| `CurveSwapperUnit.t.sol` | CurveSwapper isolated tests |
+| `DeleverageUnit.t.sol` | Deleverage path coverage |
+| `LeverageErrorPaths.t.sol` | Leverage error paths + parameter consistency |
+| `SecurityTests.t.sol` | Callback spoofing, slippage enforcement, reentrancy |
+| `AuditCoverage.t.sol` | Regression tests for all audit findings (S-01 through S-06) |
+| `FuzzTests.t.sol` | Fuzz tests for share math + flash loan bounds |
+| `VaultPositionInvariant.t.sol` | Position NFT + share value invariants |
+| `LeveragedVaultFactory.t.sol` | Factory input validation, clone deployment, ownership |
+| `LeveragedVaultPause.t.sol` | Pause blocks deposits/leverage, withdrawals remain available |
+| `LocalAlchemistV3.t.sol` | AlchemistV3 stack integration (local, no fork) |
+| `RepayDeleverage.t.sol` | Repay-based deleverage paths |
+| `MYTConverter.t.sol` | MYTConverter configuration and conversion tests |
+| `UnitMismatchTests.t.sol` | Unit conversion edge cases |
 
-Run integration tests:
+### Test Infrastructure
+
+Tests use a real AlchemistV3 stack deployed locally (no fork required). The test base hierarchy:
+
+- **`LocalAlchemistV3Base.t.sol`**: Deploys a real AlchemistV3 with underlying, debt token, MYT vault, and position NFT.
+- **`LogrisTestBase.t.sol`**: Extends with the full Logris stack (leverager, MYTConverter, flash loan adapter, swapper, and a LeveragedVault clone).
+
 ```bash
+# Run all non-fork tests
+forge test --no-match-path "test/*{Fork,EdgeCases}*"
+
+# Run integration tests
 forge test --match-contract FullIntegrationTest -vv
+
+# Run leverager unit tests
 forge test --match-contract V3LeveragerModularTest -vv
+```
+
+### Fork Tests (require RPC endpoint)
+
+| Test File | Description |
+|-----------|-------------|
+| `IntegrationFork.t.sol` | Full integration on mainnet fork |
+| `FlashLoanAdapterFork.t.sol` | Real Balancer/Aave/Euler flash loans |
+| `CurveSwapperFork.t.sol` | Real Curve pool swaps |
+| `EdgeCases.t.sol` | Flash loan adapter edge cases on mainnet fork |
+
+```bash
+export ETH_RPC_URL="https://eth-mainnet.g.alchemy.com/v2/YOUR_KEY"
+forge test --match-path "test/*Fork*" -vv
 ```
