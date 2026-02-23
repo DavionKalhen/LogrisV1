@@ -407,6 +407,34 @@ An attacker can transfer AlchemistV3 position NFTs to the vault, causing `_requi
 
 **Mitigation:** `sweepUnknownPosition()` allows the owner to remove unwanted position NFTs. When `vaultPositionId == 0` (pre-first-deposit), any position can be swept. When an active position exists, only non-active positions can be swept.
 
+**Recommended upstream fix (AlchemistV3):** The griefing vector exists because AlchemistV3Position is a standard ERC721 with no transfer gating. Two changes would eliminate it:
+
+1. **Use `_safeMint()` instead of `_mint()` in `AlchemistV3Position.mint()`.**
+   Currently, `mint()` calls `_mint(to, tokenId)` which does not invoke `onERC721Received` on the recipient. Switching to `_safeMint()` would let smart contract recipients (like LeveragedVault) reject unwanted positions during `alchemist.deposit(amount, vaultAddress, 0)` by returning the wrong selector or reverting in `onERC721Received`.
+
+2. **Add recipient validation in the `_update()` hook.**
+   Even with `_safeMint`, an attacker can use `transferFrom()` (which bypasses `onERC721Received`) to send positions to the vault. The `_update()` hook in AlchemistV3Position already fires on every transfer. Adding a recipient check there would close this vector:
+
+   ```solidity
+   function _update(address to, uint256 tokenId, address auth) internal virtual override returns (address) {
+       address from = _ownerOf(tokenId);
+       if (from != address(0)) {
+           IAlchemistV3(alchemist).resetMintAllowances(tokenId);
+       }
+       // Reject transfers to contracts that don't opt in
+       if (to != address(0) && to.code.length > 0 && from != address(0)) {
+           try IERC721Receiver(to).onERC721Received(auth, from, tokenId, "") returns (bytes4 retval) {
+               require(retval == IERC721Receiver.onERC721Received.selector, "Transfer rejected");
+           } catch {
+               revert("Recipient does not accept position NFTs");
+           }
+       }
+       return super._update(to, tokenId, auth);
+   }
+   ```
+
+   With this change, LeveragedVault's existing `onERC721Received` can be updated to only accept positions it expects (e.g., positions it created during `deposit()`), rejecting all others. This makes both `transferFrom` and `safeTransferFrom` griefing impossible at the protocol level.
+
 #### `totalAssets()` oracle dependency [INFO]
 
 `totalAssets()` depends on `alchemist.convertYieldTokensToUnderlying()` for the yield token price. For wstETH, this uses Lido's `stEthPerToken()` (~$20B TVL, manipulation-infeasible). **Future yield token integrations MUST use a manipulation-resistant price source** -- AMM spot prices are NOT safe, as flash-loan price manipulation would directly affect share price.

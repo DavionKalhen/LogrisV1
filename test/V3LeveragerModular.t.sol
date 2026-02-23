@@ -323,6 +323,75 @@ contract V3LeveragerModularTest is LocalAlchemistV3Base {
         assertEq(debt, mintAmount);
     }
 
+    function test_PermissionlessLeverage_DirectCallerCannotExtractSurplus() public {
+        uint256 depositAmount = 10 ether;
+        uint256 flashLoanAmount = 20 ether;
+        uint256 mintAmount = 25 ether;
+
+        vm.startPrank(alice);
+        IERC20(address(mytVault)).approve(address(leverager), depositAmount);
+
+        uint256 aliceUnderlyingBefore = IERC20(address(underlying)).balanceOf(alice);
+        uint256 vaultUnderlyingBefore = IERC20(address(underlying)).balanceOf(address(vault));
+
+        ILeveragerV3.LeverageParams memory params = ILeveragerV3.LeverageParams({
+            vault: address(vault),
+            converter: address(converter),
+            flashLoanAdapter: address(flashLoanAdapter),
+            swapper: address(swapper),
+            depositAmount: depositAmount,
+            flashLoanAmount: flashLoanAmount,
+            mintAmount: mintAmount,
+            minSwapOutput: 1,
+            minYieldOut: 0
+        });
+
+        // Permissionless call by EOA is allowed, but surplus must accrue to the vault.
+        leverager.leverage(params);
+        vm.stopPrank();
+
+        uint256 aliceUnderlyingAfter = IERC20(address(underlying)).balanceOf(alice);
+        uint256 vaultUnderlyingAfter = IERC20(address(underlying)).balanceOf(address(vault));
+
+        // Swapper returns 99% of mintAmount (24.75), flash repayment is 20, surplus is 4.75.
+        assertEq(aliceUnderlyingAfter - aliceUnderlyingBefore, 0, "EOA caller should not receive leverage surplus");
+        assertEq(vaultUnderlyingAfter - vaultUnderlyingBefore, 4.75 ether, "Surplus should remain in vault");
+    }
+
+    function test_PermissionlessLeverage_NoFlashLoan_DirectCallerCannotExtractSurplus() public {
+        uint256 depositAmount = 10 ether;
+        uint256 mintAmount = 8 ether;
+
+        vm.startPrank(alice);
+        IERC20(address(mytVault)).approve(address(leverager), depositAmount);
+
+        uint256 aliceUnderlyingBefore = IERC20(address(underlying)).balanceOf(alice);
+        uint256 vaultUnderlyingBefore = IERC20(address(underlying)).balanceOf(address(vault));
+
+        ILeveragerV3.LeverageParams memory params = ILeveragerV3.LeverageParams({
+            vault: address(vault),
+            converter: address(converter),
+            flashLoanAdapter: address(flashLoanAdapter),
+            swapper: address(swapper),
+            depositAmount: depositAmount,
+            flashLoanAmount: 0,
+            mintAmount: mintAmount,
+            minSwapOutput: 1,
+            minYieldOut: 0
+        });
+
+        // Permissionless call by EOA is allowed, but surplus must accrue to the vault.
+        leverager.leverage(params);
+        vm.stopPrank();
+
+        uint256 aliceUnderlyingAfter = IERC20(address(underlying)).balanceOf(alice);
+        uint256 vaultUnderlyingAfter = IERC20(address(underlying)).balanceOf(address(vault));
+
+        // No flash repayment on this path, so all swap output (99% of mint) stays in the vault.
+        assertEq(aliceUnderlyingAfter - aliceUnderlyingBefore, 0, "EOA caller should not receive leverage surplus");
+        assertEq(vaultUnderlyingAfter - vaultUnderlyingBefore, 7.92 ether, "Surplus should remain in vault");
+    }
+
     function test_LeverageRevertsWithUnapprovedConverter() public {
         MYTConverter unapprovedConverter = new MYTConverter(address(mytVault), address(underlying));
 
@@ -636,7 +705,7 @@ contract V3LeveragerModularTest is LocalAlchemistV3Base {
         vm.expectEmit(true, true, false, false);
         emit ILeveragerV3.LeverageExecuted(
             address(vault),
-            alice,
+            address(vault),
             10 ether,
             20 ether,
             30 ether,
