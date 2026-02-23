@@ -210,6 +210,73 @@ contract FullIntegrationTest is LogrisTestBase {
         assertGt(vault.getVaultPositionId(), 0, "Leverage should succeed");
     }
 
+    // ============ Deposit-Only Leverage (Partial Capacity) Tests ============
+
+    function test_LeverageAtomic_DepositOnlyWhenCapacityClamped() public {
+        // Set deposit cap so Alchemist can accept only 3 ether worth of MYT
+        _setDepositCap(3 ether);
+
+        // Alice deposits 10 ether into vault pool
+        _depositFor(alice, 10 ether);
+
+        // leverageAtomic with 10 ether: deposit capacity (3 MYT) < expectedYield (10 MYT)
+        // Branch A: clampedDeposit = ~3 ether, flashLoan = 0, mintAmount = 0
+        // With the fix, leverager deposits 3 MYT as collateral and returns (no mint, no swap)
+        vm.prank(alice);
+        vault.leverageAtomic(10 ether, 100, 200, 0);
+
+        // Position should be created with collateral but no debt
+        uint256 posId = vault.getVaultPositionId();
+        assertGt(posId, 0, "Position should exist");
+        assertEq(vault.getVaultDebtBalance(), 0, "No debt should be minted");
+        assertGt(vault.getVaultDepositedBalance(), 0, "Collateral should be deposited");
+
+        // Remaining underlying (~7 ether) should still be in the pool
+        assertApproxEqAbs(vault.getDepositPoolBalance(), 7 ether, 0.1 ether, "Unclamped amount stays in pool");
+    }
+
+    function test_Leverage_DepositOnlyWithExplicitParams() public {
+        // Set deposit cap so Alchemist can accept only 5 ether worth of MYT
+        _setDepositCap(5 ether);
+
+        _depositFor(alice, 10 ether);
+
+        // Call leverage() with explicit params: clampedDeposit=5, flashLoan=0, mintAmount=0
+        // underlyingDepositMin must be <= depositCapacity after slippage
+        uint256 minYield = 5 ether * 9900 / 10000; // 1% slippage
+        vm.prank(alice);
+        vault.leverage(5 ether, 0, minYield, 0, 0, 0);
+
+        assertGt(vault.getVaultPositionId(), 0, "Position should exist");
+        assertEq(vault.getVaultDebtBalance(), 0, "No debt");
+        assertApproxEqAbs(vault.getDepositPoolBalance(), 5 ether, 0.01 ether, "5 ether remains in pool");
+    }
+
+    function test_LeverageAtomic_DepositOnlyThenFullLeverageLater() public {
+        // Phase 1: Partial capacity — deposit only
+        _setDepositCap(3 ether);
+        _depositFor(alice, 10 ether);
+
+        vm.prank(alice);
+        vault.leverageAtomic(10 ether, 100, 200, 0);
+
+        uint256 posId = vault.getVaultPositionId();
+        assertGt(posId, 0, "Position created");
+        assertEq(vault.getVaultDebtBalance(), 0, "No debt in phase 1");
+
+        // Phase 2: Raise deposit cap and leverage the remaining pool balance
+        _setDepositCap(1000 ether);
+        vm.roll(block.number + 1);
+
+        uint256 poolBefore = vault.getDepositPoolBalance();
+        assertGt(poolBefore, 0, "Pool should have remaining underlying");
+
+        vm.prank(alice);
+        vault.leverageAtomic(poolBefore, 100, 200, 0);
+
+        assertGt(vault.getVaultDebtBalance(), 0, "Debt should exist after full leverage");
+    }
+
     // ============ Admin Function Validation Tests ============
 
     function test_AdaptersAreSet() public view {

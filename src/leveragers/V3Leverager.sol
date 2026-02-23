@@ -337,33 +337,37 @@ contract V3Leverager is ILeveragerV3, IFlashLoanCallback, Ownable, ReentrancyGua
         IERC20(yieldToken).forceApprove(ctx.vault, totalYield);
         vault.vaultDepositYieldTokens(totalYield);
 
-        // 4. Mint debt tokens
-        vault.vaultMintDebtTokens(ctx.mintAmount, address(this));
+        // 4-7: Mint, swap, repay, surplus. Skip when mintAmount == 0 (deposit-only mode:
+        // Alchemist deposit capacity allows collateral but not enough for leverage).
+        if (ctx.mintAmount > 0) {
+            // 4. Mint debt tokens
+            vault.vaultMintDebtTokens(ctx.mintAmount, address(this));
 
-        // 5. Swap debt → underlying
-        address debtToken = _getDebtToken(ctx.vault);
-        IERC20(debtToken).forceApprove(ctx.swapper, ctx.mintAmount);
-        uint256 swapOutput = ISwapper(ctx.swapper).swapDebtToUnderlying(
-            ctx.mintAmount,
-            ctx.minSwapOutput,
-            address(this),
-            ""
-        );
+            // 5. Swap debt → underlying
+            address debtToken = _getDebtToken(ctx.vault);
+            IERC20(debtToken).forceApprove(ctx.swapper, ctx.mintAmount);
+            uint256 swapOutput = ISwapper(ctx.swapper).swapDebtToUnderlying(
+                ctx.mintAmount,
+                ctx.minSwapOutput,
+                address(this),
+                ""
+            );
 
-        // Validate slippage protection
-        if (swapOutput < ctx.minSwapOutput) revert SlippageExceeded();
+            // Validate slippage protection
+            if (swapOutput < ctx.minSwapOutput) revert SlippageExceeded();
 
-        // 6. Repay flash loan (if any)
-        uint256 repayAmount = flashLoanAmount + flashLoanFee;
-        if (repayAmount > 0) {
-            if (swapOutput < repayAmount) revert InsufficientOutput();
-            IERC20(underlyingToken).safeTransfer(ctx.flashLoanAdapter, repayAmount);
-        }
+            // 6. Repay flash loan (if any)
+            uint256 repayAmount = flashLoanAmount + flashLoanFee;
+            if (repayAmount > 0) {
+                if (swapOutput < repayAmount) revert InsufficientOutput();
+                IERC20(underlyingToken).safeTransfer(ctx.flashLoanAdapter, repayAmount);
+            }
 
-        // 7. Return surplus to user
-        uint256 surplus = swapOutput > repayAmount ? swapOutput - repayAmount : 0;
-        if (surplus > 0) {
-            IERC20(underlyingToken).safeTransfer(ctx.user, surplus);
+            // 7. Return surplus to user
+            uint256 surplus = swapOutput > repayAmount ? swapOutput - repayAmount : 0;
+            if (surplus > 0) {
+                IERC20(underlyingToken).safeTransfer(ctx.user, surplus);
+            }
         }
 
         emit LeverageExecuted(
