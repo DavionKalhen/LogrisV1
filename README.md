@@ -158,7 +158,7 @@ The leverage flow:
 4. Deposit all yield tokens into AlchemistV3 (creates position on first call)
 5. Mint debt tokens (alETH) against the collateral
 6. Swap debt -> underlying to repay flash loan
-7. Return surplus to caller
+7. Return surplus to vault pool (benefits all shareholders)
 
 Both functions accept a `deadline` parameter (set to 0 to skip) for transaction expiry protection.
 
@@ -256,6 +256,7 @@ Key behaviors:
 - **State machine:** `Idle -> Leverage/DeleverageRepay -> Idle` ensures flash loan callbacks are only processed during active operations
 - **Callback security:** `onFlashLoanReceived` validates `initiator == address(this)` and `msg.sender == flashLoanAdapter`
 - **Deleverage access control:** `deleverageRepay()` requires `msg.sender == params.vault` -- only vaults can initiate deleverage
+- **Surplus routing:** Leverage swap surplus is sent to the vault (not the caller), preventing value extraction by permissionless callers
 
 ### Adapters
 
@@ -305,6 +306,7 @@ Token adapter for AlchemistV3 integration. Provides:
 - `price()`: ETH value per wstETH via `stEthPerToken()`
 - `wrap()`: WETH -> ETH -> stETH -> wstETH (with `nonReentrant` protection)
 - `unwrap()`: wstETH -> stETH -> WETH via swapper (with `nonReentrant` protection)
+- Slippage baseline uses nominal 1:1 stETH:ETH value, not same-tx spot quotes (prevents oracle manipulation)
 
 ## Token Flow
 
@@ -337,7 +339,7 @@ Token adapter for AlchemistV3 integration. Provides:
               |  Repay flash loan   |  Return WETH to adapter
               +----------+----------+
                          |
-                    Surplus -> Caller
+                    Surplus -> Vault pool
 ```
 
 ### Deleverage Operation (Withdraw Path 3)
@@ -373,21 +375,21 @@ The deleverage path is fully deterministic -- no DEX swap needed.
 
 ### Open Issues
 
-#### `leverage()` has no access control [HIGH -- Deferred]
+#### `leverage()` has no access control [MEDIUM -- Mitigated]
 
 Anyone can call `leverage()` with parameters of their choosing to leverage the vault's pooled deposits. The vault enforces a minimum slippage floor via `_enforceMinimumSlippage()` to bound the worst-case loss per operation, but an attacker could still:
 
 - Leverage at unfavorable (but within-tolerance) slippage
 - Trigger leverage at inopportune market times
-- Front-run legitimate leverage calls via MEV
 
 **Mitigations in place:**
+- **Surplus routing to vault:** The leverager sends any debt-swap surplus back to the vault pool (not the caller), eliminating the economic incentive for external callers to extract value
 - `_enforceMinimumSlippage()` enforces `debtTradeMin >= mintAmount * (10000 - debtSlippageBps) / 10000`
 - `deadline` parameter prevents stale transactions from executing
 - `whenNotPaused` allows the owner to halt leverage operations
 - The vault's pool balance limits the deposit amount available to leverage
 
-**Why deferred:** Adding access control (e.g., `onlyOwner`) would centralize the leverage trigger, creating a single point of failure. The current design allows any keeper or automation to maintain the position. Operators should monitor leverage calls and pause if anomalous activity is detected.
+**Why kept permissionless:** Adding access control (e.g., `onlyOwner`) would centralize the leverage trigger, creating a single point of failure. The current design allows any keeper or automation to maintain the position. With surplus routed to the vault, callers cannot profit from the operation -- the worst case is bounded slippage loss within the configured tolerance.
 
 #### Immutable adapter addresses [MEDIUM]
 
@@ -415,7 +417,7 @@ The codebase has undergone two rounds of professional security audit (2026-02-07
 
 | ID | Severity | Finding | Status |
 |----|----------|---------|--------|
-| S-01 | HIGH | `leverage()` has no access control | Deferred (see above) |
+| S-01 | HIGH→MED | `leverage()` has no access control | Mitigated (surplus → vault, see above) |
 | S-02 | MEDIUM | Path 3 over-withdraws when pool balance > 0 | **Fixed** |
 | S-03 | MEDIUM | CEI violation: shares burned after external calls | **Fixed** (all paths) |
 | S-04 | MEDIUM | Position creation griefing via NFT transfer | **Fixed** |
@@ -425,6 +427,8 @@ The codebase has undergone two rounds of professional security audit (2026-02-07
 | M-3 | MEDIUM | WstETHAdapter `wrap()`/`unwrap()` lacked reentrancy guards | **Fixed** |
 | L-1 | LOW | Atomic functions didn't validate slippage < 10000 bps | **Fixed** |
 | L-3 | LOW | EulerFlashLoanAdapter stored unused `userData` in storage | **Fixed** |
+| -- | MEDIUM | WstETHAdapter slippage baseline used manipulable spot quote | **Fixed** (nominal 1:1 baseline) |
+| -- | LOW | AaveV3FlashLoanAdapter checked pool balance instead of aToken | **Fixed** (proper aToken lookup) |
 | S-07+ | LOW/INFO | Various low-severity findings | Accepted |
 
 ## Safety Mechanisms
@@ -432,6 +436,7 @@ The codebase has undergone two rounds of professional security audit (2026-02-07
 | Mechanism | Description |
 |-----------|-------------|
 | **ERC4626 inflation protection** | `_decimalsOffset() = 3` adds 1000 virtual shares, requiring ~1000x the victim's deposit to execute an inflation attack |
+| **Leverage surplus to vault** | Debt-swap surplus during leverage is routed to the vault pool, not the caller, preventing value extraction |
 | **Slippage enforcement floor** | `_enforceMinimumSlippage()` prevents callers from passing unreasonably low `debtTradeMin`, even when `leverage()` has no access control |
 | **CEI pattern** | All three withdrawal paths burn shares before making external calls |
 | **Reentrancy protection** | `nonReentrant` on callback functions and adapters, `noConcurrentOperation` on vault entry points |

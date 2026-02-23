@@ -172,7 +172,9 @@ contract V3Leverager is ILeveragerV3, IFlashLoanCallback, Ownable, ReentrancyGua
             converter: params.converter,
             swapper: params.swapper,
             flashLoanAdapter: params.flashLoanAdapter,
-            user: msg.sender,
+            // Keep leverage permissionless while preventing value extraction:
+            // route any swap surplus back to the vault, not the external caller.
+            user: params.vault,
             depositAmount: params.depositAmount,
             mintAmount: params.mintAmount,
             minSwapOutput: params.minSwapOutput,

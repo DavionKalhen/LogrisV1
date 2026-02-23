@@ -179,8 +179,9 @@ contract WstETHAdapter is ITokenAdapter, Ownable, ReentrancyGuard {
         uint256 stETHReceived = IWstETH(WSTETH).unwrap(amount);
         IERC20(STETH).forceApprove(address(SWAPPER), stETHReceived);
 
-        (uint256 expectedOut,) = SWAPPER.previewSwapDebtToUnderlying(stETHReceived);
-        uint256 minOut = (expectedOut * MIN_OUT_BPS) / BASIS_POINTS;
+        // Use nominal 1:1 stETH->ETH value as the slippage baseline instead of
+        // same-tx spot quotes, which can be manipulated around execution.
+        uint256 minOut = (stETHReceived * MIN_OUT_BPS) / BASIS_POINTS;
         if (minOut == 0) revert MinOutputRequired();
 
         // 3. Swap stETH -> WETH using configured swapper

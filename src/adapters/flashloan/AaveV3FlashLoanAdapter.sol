@@ -20,6 +20,21 @@ interface IAaveV3Pool {
     ) external;
 
     function FLASHLOAN_PREMIUM_TOTAL() external view returns (uint128);
+
+    function ADDRESSES_PROVIDER() external view returns (address);
+}
+
+/// @notice Aave V3 addresses provider (minimal)
+interface IAaveV3AddressesProvider {
+    function getPoolDataProvider() external view returns (address);
+}
+
+/// @notice Aave V3 protocol data provider (minimal)
+interface IAaveV3DataProvider {
+    function getReserveTokensAddresses(address asset)
+        external
+        view
+        returns (address aTokenAddress, address stableDebtTokenAddress, address variableDebtTokenAddress);
 }
 
 /// @notice Aave V3 flash loan receiver interface
@@ -182,21 +197,50 @@ contract AaveV3FlashLoanAdapter is IFlashLoanAdapter, IFlashLoanSimpleReceiver, 
     /// @inheritdoc IFlashLoanAdapter
     function isTokenSupported(address token) external view override returns (bool) {
         if (token == address(0)) return false;
-        // Check if Aave Pool has any liquidity of the token
-        // In practice, check aToken existence or balance
+        address aToken = _getATokenAddress(token);
+        if (aToken != address(0)) return true;
+        // Fallback for custom/mock pools that do not expose Aave metadata.
         return IERC20(token).balanceOf(address(AAVE_POOL)) > 0;
     }
 
     /// @inheritdoc IFlashLoanAdapter
     function maxFlashLoan(address token) external view override returns (uint256) {
         if (token == address(0)) return 0;
-        // Maximum flash loan is the pool's token balance
+        address aToken = _getATokenAddress(token);
+        if (aToken != address(0)) {
+            return IERC20(token).balanceOf(aToken);
+        }
+        // Fallback for custom/mock pools that do not expose Aave metadata.
         return IERC20(token).balanceOf(address(AAVE_POOL));
     }
 
     /// @inheritdoc IFlashLoanAdapter
     function getProvider() external view override returns (address) {
         return address(AAVE_POOL);
+    }
+
+    /// @dev Best-effort lookup for reserve aToken address through Aave metadata endpoints.
+    ///      Returns address(0) for non-Aave/custom pools where these endpoints are unavailable.
+    function _getATokenAddress(address token) internal view returns (address aToken) {
+        (bool okProvider, bytes memory providerData) = address(AAVE_POOL).staticcall(
+            abi.encodeWithSelector(IAaveV3Pool.ADDRESSES_PROVIDER.selector)
+        );
+        if (!okProvider || providerData.length < 32) return address(0);
+        address provider = abi.decode(providerData, (address));
+        if (provider == address(0)) return address(0);
+
+        (bool okDataProvider, bytes memory dataProviderData) = provider.staticcall(
+            abi.encodeWithSelector(IAaveV3AddressesProvider.getPoolDataProvider.selector)
+        );
+        if (!okDataProvider || dataProviderData.length < 32) return address(0);
+        address dataProvider = abi.decode(dataProviderData, (address));
+        if (dataProvider == address(0)) return address(0);
+
+        (bool okReserve, bytes memory reserveData) = dataProvider.staticcall(
+            abi.encodeWithSelector(IAaveV3DataProvider.getReserveTokensAddresses.selector, token)
+        );
+        if (!okReserve || reserveData.length < 96) return address(0);
+        (aToken,,) = abi.decode(reserveData, (address, address, address));
     }
 
     // ===== ADMIN FUNCTIONS =====
