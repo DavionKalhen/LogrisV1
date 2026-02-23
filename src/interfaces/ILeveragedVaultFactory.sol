@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: MIT
 
-pragma solidity 0.8.26;
+pragma solidity 0.8.28;
 
 /// @title ILeveragedVaultFactory
 /// @notice Interface for the factory that deploys EIP-1167 minimal proxy clones of LeveragedVault.

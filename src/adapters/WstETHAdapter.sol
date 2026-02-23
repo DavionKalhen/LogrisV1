@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-pragma solidity 0.8.26;
+pragma solidity 0.8.28;
 
 // Use the alchemix-v3 interfaces
 import "../../alchemix-v3/src/interfaces/ITokenAdapter.sol";
@@ -8,6 +8,7 @@ import "../interfaces/ISwapper.sol";
 import "lib/openzeppelin-contracts/contracts/token/ERC20/IERC20.sol";
 import "lib/openzeppelin-contracts/contracts/token/ERC20/utils/SafeERC20.sol";
 import "lib/openzeppelin-contracts/contracts/access/Ownable.sol";
+import "lib/openzeppelin-contracts/contracts/utils/ReentrancyGuard.sol";
 
 /**
  * @title IWstETH
@@ -50,7 +51,7 @@ interface IStETH {
  *
  * Price represents: ETH value per wstETH token
  */
-contract WstETHAdapter is ITokenAdapter, Ownable {
+contract WstETHAdapter is ITokenAdapter, Ownable, ReentrancyGuard {
     using SafeERC20 for IERC20;
 
     error ZeroAddress();
@@ -142,7 +143,7 @@ contract WstETHAdapter is ITokenAdapter, Ownable {
      * @param recipient Address to receive the wstETH
      * @return wstETHAmount Amount of wstETH received
      */
-    function wrap(uint256 amount, address recipient) external returns (uint256 wstETHAmount) {
+    function wrap(uint256 amount, address recipient) external nonReentrant returns (uint256 wstETHAmount) {
         // 1. Pull WETH from caller
         IERC20(WETH).safeTransferFrom(msg.sender, address(this), amount);
 
@@ -170,7 +171,7 @@ contract WstETHAdapter is ITokenAdapter, Ownable {
      * @param recipient Address to receive the WETH
      * @return wethAmount Amount of WETH received
      */
-    function unwrap(uint256 amount, address recipient) external returns (uint256 wethAmount) {
+    function unwrap(uint256 amount, address recipient) external nonReentrant returns (uint256 wethAmount) {
         // 1. Pull wstETH from caller
         IERC20(WSTETH).safeTransferFrom(msg.sender, address(this), amount);
 

@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: MIT
 
-pragma solidity 0.8.26;
+pragma solidity 0.8.28;
 
 import "./interfaces/ILeveragedVaultFactory.sol";
+import "./interfaces/ITokenConverter.sol";
 import "./LeveragedVault.sol";
 import "lib/openzeppelin-contracts/contracts/access/Ownable.sol";
 import "lib/openzeppelin-contracts/contracts/proxy/Clones.sol";
@@ -27,6 +28,8 @@ contract LeveragedVaultFactory is ILeveragedVaultFactory, Ownable {
     error SlippageTooHigh();
     /// @dev Thrown when a vault already exists for the given (yieldToken, alchemist) pair.
     error VaultAlreadyExists();
+    /// @dev Thrown when the converter's tokens don't match the vault's yield/underlying tokens.
+    error ConverterTokenMismatch();
 
     /// @notice The LeveragedVault implementation contract that clones delegate to
     address public immutable IMPLEMENTATION;
@@ -79,6 +82,10 @@ contract LeveragedVaultFactory is ILeveragedVaultFactory, Ownable {
         if (converter.code.length == 0) revert NotAContract();
         if (flashLoanAdapter.code.length == 0) revert NotAContract();
         if (swapper.code.length == 0) revert NotAContract();
+
+        // Semantic validation: converter tokens must match vault configuration
+        if (ITokenConverter(converter).yieldToken() != yieldToken) revert ConverterTokenMismatch();
+        if (ITokenConverter(converter).underlyingToken() != underlyingToken) revert ConverterTokenMismatch();
 
         vault = Clones.clone(IMPLEMENTATION);
 

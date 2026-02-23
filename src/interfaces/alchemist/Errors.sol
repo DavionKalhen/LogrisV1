@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-pragma solidity 0.8.26;
+pragma solidity 0.8.28;
 
 /// @notice An error used to indicate that an action could not be completed because either the `msg.sender` or
 ///         `msg.origin` is not authorized.

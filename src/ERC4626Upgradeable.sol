@@ -2,7 +2,7 @@
 // OpenZeppelin Contracts (last updated v4.8.1) (token/ERC20/extensions/ERC4626.sol)
 // Modified for upgradeable pattern with ERC-7201 namespaced storage
 
-pragma solidity 0.8.26;
+pragma solidity 0.8.28;
 
 import "openzeppelin-contracts-upgradeable/proxy/utils/Initializable.sol";
 import "openzeppelin-contracts-upgradeable/token/ERC20/ERC20Upgradeable.sol";

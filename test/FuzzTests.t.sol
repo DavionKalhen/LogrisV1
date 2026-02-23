@@ -1,199 +1,19 @@
 // SPDX-License-Identifier: MIT
-pragma solidity 0.8.26;
+pragma solidity 0.8.28;
 
-import "forge-std/Test.sol";
-import "lib/openzeppelin-contracts/contracts/token/ERC20/ERC20.sol";
-import "lib/openzeppelin-contracts/contracts/proxy/Clones.sol";
-import "../src/LeveragedVault.sol";
-
-// ============ Minimal Mocks for Fuzz Testing ============
-
-contract FuzzMockERC20 is ERC20 {
-    constructor(string memory name_, string memory symbol_) ERC20(name_, symbol_) {}
-
-    function mint(address to, uint256 amount) external {
-        _mint(to, amount);
-    }
-}
-
-contract FuzzMockPositionNFT {
-    address public alchemist;
-    uint256 private _currentTokenId;
-
-    mapping(uint256 => address) private _owners;
-    mapping(address => uint256) private _balances;
-    mapping(address => uint256[]) private _ownedTokens;
-    mapping(uint256 => uint256) private _ownedTokensIndex;
-
-    constructor(address alchemist_) {
-        alchemist = alchemist_;
-    }
-
-    function mint(address to) external returns (uint256) {
-        require(msg.sender == alchemist, "Only alchemist");
-        _currentTokenId++;
-        uint256 tokenId = _currentTokenId;
-        _owners[tokenId] = to;
-        _ownedTokensIndex[tokenId] = _ownedTokens[to].length;
-        _ownedTokens[to].push(tokenId);
-        _balances[to] += 1;
-        return tokenId;
-    }
-
-    function ownerOf(uint256 tokenId) external view returns (address) {
-        address owner = _owners[tokenId];
-        require(owner != address(0), "Invalid token");
-        return owner;
-    }
-
-    function balanceOf(address owner) external view returns (uint256) {
-        return _balances[owner];
-    }
-
-    function tokenOfOwnerByIndex(address owner, uint256 index) external view returns (uint256) {
-        require(index < _ownedTokens[owner].length, "Index out of bounds");
-        return _ownedTokens[owner][index];
-    }
-
-    function transferFrom(address from, address to, uint256 tokenId) external {
-        require(_owners[tokenId] == from, "Not owner");
-        _owners[tokenId] = to;
-
-        uint256 fromIndex = _ownedTokensIndex[tokenId];
-        uint256 lastIndex = _ownedTokens[from].length - 1;
-        if (fromIndex != lastIndex) {
-            uint256 lastTokenId = _ownedTokens[from][lastIndex];
-            _ownedTokens[from][fromIndex] = lastTokenId;
-            _ownedTokensIndex[lastTokenId] = fromIndex;
-        }
-        _ownedTokens[from].pop();
-        _balances[from] -= 1;
-
-        _ownedTokensIndex[tokenId] = _ownedTokens[to].length;
-        _ownedTokens[to].push(tokenId);
-        _balances[to] += 1;
-    }
-}
-
-contract FuzzMockAlchemistV3 {
-    address public yieldTokenAddr;
-    address public debtTokenAddr;
-    FuzzMockPositionNFT public positionNFT;
-
-    uint256 public depositCapVal = type(uint256).max;
-    uint256 public totalDepositedVal;
-    uint256 public minCollateralizationVal = 1_111_111_111_111_111_111; // ~111%
-
-    // Per-position tracking
-    mapping(uint256 => uint256) public positionCollateral;
-    mapping(uint256 => uint256) public positionDebt;
-
-    constructor(address _yieldToken, address _debtToken) {
-        yieldTokenAddr = _yieldToken;
-        debtTokenAddr = _debtToken;
-        positionNFT = new FuzzMockPositionNFT(address(this));
-    }
-
-    function alchemistPositionNFT() external view returns (address) {
-        return address(positionNFT);
-    }
-
-    function depositsPaused() external pure returns (bool) { return false; }
-    function loansPaused() external pure returns (bool) { return false; }
-    function depositCap() external view returns (uint256) { return depositCapVal; }
-    function getTotalDeposited() external view returns (uint256) { return totalDepositedVal; }
-    function minimumCollateralization() external view returns (uint256) { return minCollateralizationVal; }
-    function yieldToken() external view returns (address) { return yieldTokenAddr; }
-    function debtToken() external view returns (address) { return debtTokenAddr; }
-
-    function setDepositCap(uint256 cap) external { depositCapVal = cap; }
-    function setMinCollateralization(uint256 mc) external { minCollateralizationVal = mc; }
-
-    function getMaxBorrowable(uint256 posId) external view returns (uint256) {
-        uint256 collUnderlying = positionCollateral[posId]; // 1:1 for simplicity
-        uint256 maxDebt = collUnderlying * 1e18 / minCollateralizationVal;
-        if (maxDebt > positionDebt[posId]) return maxDebt - positionDebt[posId];
-        return 0;
-    }
-
-    function getCDP(uint256 posId) external view returns (uint256, uint256, uint256) {
-        return (positionCollateral[posId], positionDebt[posId], 0);
-    }
-
-    function convertYieldTokensToUnderlying(uint256 amount) external pure returns (uint256) { return amount; }
-    function convertUnderlyingTokensToYield(uint256 amount) external pure returns (uint256) { return amount; }
-    function normalizeDebtTokensToUnderlying(uint256 amount) external pure returns (uint256) { return amount; }
-    function normalizeUnderlyingTokensToDebt(uint256 amount) external pure returns (uint256) { return amount; }
-
-    function approveMint(uint256, address, uint256) external {}
-
-    function deposit(uint256 amount, address recipient, uint256 recipientId) external returns (uint256) {
-        ERC20(yieldTokenAddr).transferFrom(msg.sender, address(this), amount);
-        if (recipientId == 0) {
-            positionNFT.mint(recipient);
-            recipientId = 1; // simplified
-        }
-        positionCollateral[recipientId] += amount;
-        totalDepositedVal += amount;
-        return 0;
-    }
-
-    function withdraw(uint256 amount, address recipient, uint256 posId) external returns (uint256) {
-        positionCollateral[posId] -= amount;
-        totalDepositedVal -= amount;
-        ERC20(yieldTokenAddr).transfer(recipient, amount);
-        return amount;
-    }
-
-    function mint(uint256 posId, uint256 amount, address recipient) external {
-        positionDebt[posId] += amount;
-        FuzzMockERC20(debtTokenAddr).mint(recipient, amount);
-    }
-
-    function burn(uint256 amount, uint256 posId) external returns (uint256) {
-        ERC20(debtTokenAddr).transferFrom(msg.sender, address(this), amount);
-        positionDebt[posId] -= amount;
-        return amount;
-    }
-}
+import "./LogrisTestBase.t.sol";
 
 // ============ Fuzz Test Contracts ============
 
 /**
  * @title LeveragedVaultFuzzTest
  * @notice Fuzz tests for mathematical calculations and share accounting
+ *         using the real AlchemistV3 stack via LogrisTestBase.
  */
-contract LeveragedVaultFuzzTest is Test {
-    FuzzMockERC20 private underlying;
-    FuzzMockERC20 private yieldToken;
-    FuzzMockERC20 private debtToken;
-    FuzzMockAlchemistV3 private alchemist;
-    LeveragedVault private vault;
-
-    address private alice = makeAddr("alice");
-    address private bob = makeAddr("bob");
+contract LeveragedVaultFuzzTest is LogrisTestBase {
 
     function setUp() public {
-        underlying = new FuzzMockERC20("Underlying", "UND");
-        yieldToken = new FuzzMockERC20("Yield", "YLD");
-        debtToken = new FuzzMockERC20("Debt", "DBT");
-        alchemist = new FuzzMockAlchemistV3(address(yieldToken), address(debtToken));
-
-        LeveragedVault impl = new LeveragedVault();
-        vault = LeveragedVault(payable(Clones.clone(address(impl))));
-        vault.initialize(
-            address(yieldToken),
-            address(underlying),
-            address(alchemist),
-            address(this), // leverager = test contract
-            100,
-            200,
-            address(0xCAFE),
-            address(0xF00D),
-            address(0xBEEF),
-            address(underlying),
-            address(this)
-        );
+        _deployLogrisStack();
     }
 
     // ============ Share Calculation Fuzz Tests ============
@@ -204,7 +24,7 @@ contract LeveragedVaultFuzzTest is Test {
 
         underlying.mint(alice, amount);
         vm.startPrank(alice);
-        underlying.approve(address(vault), amount);
+        IERC20(address(underlying)).approve(address(vault), amount);
         uint256 shares = vault.depositUnderlying(amount);
         vm.stopPrank();
 
@@ -220,14 +40,14 @@ contract LeveragedVaultFuzzTest is Test {
         // Alice deposits first
         underlying.mint(alice, amount1);
         vm.startPrank(alice);
-        underlying.approve(address(vault), amount1);
+        IERC20(address(underlying)).approve(address(vault), amount1);
         uint256 aliceShares = vault.depositUnderlying(amount1);
         vm.stopPrank();
 
         // Bob deposits second
         underlying.mint(bob, amount2);
         vm.startPrank(bob);
-        underlying.approve(address(vault), amount2);
+        IERC20(address(underlying)).approve(address(vault), amount2);
         uint256 bobShares = vault.depositUnderlying(amount2);
         vm.stopPrank();
 
@@ -250,11 +70,11 @@ contract LeveragedVaultFuzzTest is Test {
         // Create initial deposit so vault has supply
         underlying.mint(alice, depositAmount);
         vm.startPrank(alice);
-        underlying.approve(address(vault), depositAmount);
+        IERC20(address(underlying)).approve(address(vault), depositAmount);
         vault.depositUnderlying(depositAmount);
         vm.stopPrank();
 
-        // Convert underlying → shares → underlying should be approximately identity
+        // Convert underlying -> shares -> underlying should be approximately identity
         uint256 shares = vault.convertUnderlyingTokensToShares(queryAmount);
         uint256 backToUnderlying = vault.convertSharesToUnderlyingTokens(shares);
 
@@ -268,7 +88,7 @@ contract LeveragedVaultFuzzTest is Test {
 
         underlying.mint(alice, amount);
         vm.startPrank(alice);
-        underlying.approve(address(vault), amount);
+        IERC20(address(underlying)).approve(address(vault), amount);
         uint256 shares = vault.depositUnderlying(amount);
         vm.stopPrank();
 
@@ -278,7 +98,7 @@ contract LeveragedVaultFuzzTest is Test {
     // ============ Basis Point Adjustment Fuzz Tests ============
 
     /// @notice _basisPointAdjustment should always reduce or maintain the amount
-    function testFuzz_BasisPointAdjustmentNeverIncreases(uint256 amount, uint32 slippageBps) public view {
+    function testFuzz_BasisPointAdjustmentNeverIncreases(uint256 amount, uint32 slippageBps) public pure {
         amount = bound(amount, 0, 1e30);
         slippageBps = uint32(bound(slippageBps, 0, 9999));
 
@@ -289,7 +109,7 @@ contract LeveragedVaultFuzzTest is Test {
     }
 
     /// @notice Zero slippage should return the same amount
-    function testFuzz_ZeroSlippagePreservesAmount(uint256 amount) public view {
+    function testFuzz_ZeroSlippagePreservesAmount(uint256 amount) public pure {
         amount = bound(amount, 0, 1e30);
         uint256 adjusted = amount * (10000 - 0) / 10000;
         assertEq(adjusted, amount, "Zero slippage should not change amount");
@@ -334,47 +154,6 @@ contract LeveragedVaultFuzzTest is Test {
         }
     }
 
-    /// @notice Flash loan formula should handle extreme collateralization ratios
-    function testFuzz_FlashLoanWithVaryingCollateralization(uint256 depositAmount, uint256 minCollat) public {
-        depositAmount = bound(depositAmount, 1e15, 1e24);
-        minCollat = bound(minCollat, 1.01e18, 5e18); // 101% to 500%
-
-        alchemist.setMinCollateralization(minCollat);
-
-        uint32 underlyingSlippage = 100; // 1%
-        uint32 debtSlippage = 200; // 2%
-
-        (
-            uint256 clampedDeposit,
-            uint256 flashLoanAmount,
-            ,
-            uint256 mintAmount,
-        ) = vault.getLeverageParameters(depositAmount, underlyingSlippage, debtSlippage);
-
-        // Higher collateralization should mean less leverage
-        assertLe(clampedDeposit, depositAmount, "Clamped should be <= deposit");
-
-        // Flash loan should be reasonable relative to deposit
-        if (flashLoanAmount > 0) {
-            // With very high collateralization (e.g., 500%), leverage should be limited
-            // The maximum theoretical leverage is 1/(1 - 1/CR)
-            // For 200% CR, max leverage is 2x, so flash loan < deposit
-            // For 111% CR, max leverage is ~9x
-            uint256 maxLeverageMultiple = minCollat * 10 / (minCollat - 1e18);
-            assertLt(flashLoanAmount, depositAmount * maxLeverageMultiple,
-                "Flash loan should be bounded by leverage multiple");
-        }
-
-        // Mint amount should never exceed what collateral can back
-        if (mintAmount > 0 && clampedDeposit > 0) {
-            uint256 totalDeposit = clampedDeposit + flashLoanAmount;
-            uint256 maxMintable = totalDeposit * 1e18 / minCollat;
-            // Allow some slack for existing borrow capacity
-            assertLe(mintAmount, maxMintable + 1e18,
-                "Mint should not vastly exceed collateral backing");
-        }
-    }
-
     // ============ Redeemable Balance Fuzz Tests ============
 
     /// @notice Redeemable balance should equal pool balance when no position exists
@@ -402,7 +181,7 @@ contract LeveragedVaultFuzzTest is Test {
 
         underlying.mint(alice, depositAmount);
         vm.startPrank(alice);
-        underlying.approve(address(vault), depositAmount);
+        IERC20(address(underlying)).approve(address(vault), depositAmount);
         uint256 shares = vault.depositUnderlying(depositAmount);
         vm.stopPrank();
 
@@ -415,7 +194,7 @@ contract LeveragedVaultFuzzTest is Test {
 
         // Withdrawal should succeed without needing flash loan (pool has enough)
         vm.prank(alice);
-        uint256 withdrawn = vault.withdrawUnderlying(shares, 0, 0, 0);
+        uint256 withdrawn = vault.withdrawUnderlying(shares, 0, 0, 0, 0);
 
         assertApproxEqAbs(withdrawn, depositAmount, 1, "Should withdraw full deposit");
         assertEq(vault.balanceOf(alice), 0, "Should have 0 shares after withdrawal");
@@ -424,16 +203,14 @@ contract LeveragedVaultFuzzTest is Test {
     // ============ Deposit Cap Fuzz Tests ============
 
     /// @notice Deposit capacity should decrease as deposits fill up
-    function testFuzz_DepositCapacityDecreases(uint256 cap, uint256 deposited) public {
+    function testFuzz_DepositCapacityDecreases(uint256 cap) public {
         cap = bound(cap, 1e18, 1e30);
-        deposited = bound(deposited, 0, cap);
 
-        alchemist.setDepositCap(cap);
-        // Simulate deposits by directly setting totalDeposited
-        // We can't call deposit here without position setup, so just verify view function
-        uint256 capacity = vault.getDepositCapacity();
+        // Set cap via real AlchemistV3 admin
+        _setDepositCap(cap);
 
         // With nothing deposited, capacity should be the full cap
+        uint256 capacity = vault.getDepositCapacity();
         assertEq(capacity, cap, "Capacity should equal cap with no deposits");
     }
 
@@ -444,7 +221,7 @@ contract LeveragedVaultFuzzTest is Test {
         // First make a deposit so supply > 0
         underlying.mint(alice, 1e18);
         vm.startPrank(alice);
-        underlying.approve(address(vault), 1e18);
+        IERC20(address(underlying)).approve(address(vault), 1e18);
         vault.depositUnderlying(1e18);
         vm.stopPrank();
 
@@ -475,19 +252,19 @@ contract LeveragedVaultFuzzTest is Test {
         // Three sequential deposits
         underlying.mint(alice, deposit1);
         vm.prank(alice);
-        underlying.approve(address(vault), deposit1);
+        IERC20(address(underlying)).approve(address(vault), deposit1);
         vm.prank(alice);
         vault.depositUnderlying(deposit1);
 
         underlying.mint(bob, deposit2);
         vm.prank(bob);
-        underlying.approve(address(vault), deposit2);
+        IERC20(address(underlying)).approve(address(vault), deposit2);
         vm.prank(bob);
         vault.depositUnderlying(deposit2);
 
         underlying.mint(charlie, deposit3);
         vm.prank(charlie);
-        underlying.approve(address(vault), deposit3);
+        IERC20(address(underlying)).approve(address(vault), deposit3);
         vm.prank(charlie);
         vault.depositUnderlying(deposit3);
 

@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-pragma solidity 0.8.26;
+pragma solidity 0.8.28;
 
 import "../../interfaces/flashloan/IFlashLoanAdapter.sol";
 import "../../interfaces/flashloan/IFlashLoanCallback.sol";
@@ -33,9 +33,11 @@ contract EulerFlashLoanAdapter is IFlashLoanAdapter, IFlashLoan, Ownable, Pausab
         address recipient;
         address token;
         uint256 amount;
-        bytes userData;
     }
     FlashLoanContext private _context;
+
+    /// @notice Flash loan in progress flag
+    bool private _flashLoanInProgress;
 
     /// @notice Emitted when emergency withdrawal occurs
     event EmergencyWithdrawal(address indexed token, uint256 amount, address indexed recipient);
@@ -47,6 +49,7 @@ contract EulerFlashLoanAdapter is IFlashLoanAdapter, IFlashLoan, Ownable, Pausab
     error InvalidToken();
     error LengthMismatch();
     error InvalidCaller();
+    error ContextNotInitialized();
 
     /**
      * @notice Constructor
@@ -84,20 +87,23 @@ contract EulerFlashLoanAdapter is IFlashLoanAdapter, IFlashLoan, Ownable, Pausab
         address dToken = dTokens[token];
         if (dToken == address(0)) revert UnsupportedToken();
 
+        // Mark flash loan as in progress
+        _flashLoanInProgress = true;
+
         // Store context for callback
         _context = FlashLoanContext({
             initiator: msg.sender,
             recipient: recipient,
             token: token,
-            amount: amount,
-            userData: data
+            amount: amount
         });
 
         // Execute flash loan through Euler DToken
         // Euler calls onFlashLoan on this contract
         DToken(dToken).flashLoan(amount, data);
 
-        // Clear context after completion
+        // Clear state after completion
+        _flashLoanInProgress = false;
         delete _context;
     }
 
@@ -106,6 +112,9 @@ contract EulerFlashLoanAdapter is IFlashLoanAdapter, IFlashLoan, Ownable, Pausab
      * @dev Called by Euler DToken during flash loan execution
      */
     function onFlashLoan(bytes memory data) external override {
+        // SECURITY: Verify flash loan is in progress
+        if (!_flashLoanInProgress) revert ContextNotInitialized();
+
         // Verify caller is the expected DToken
         address expectedDToken = dTokens[_context.token];
         if (msg.sender != expectedDToken) revert InvalidCaller();

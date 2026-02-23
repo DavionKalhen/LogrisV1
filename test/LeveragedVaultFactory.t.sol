@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-pragma solidity 0.8.26;
+pragma solidity 0.8.28;
 
 import "forge-std/Test.sol";
 import "../src/LeveragedVaultFactory.sol";
@@ -7,6 +7,16 @@ import "../src/LeveragedVault.sol";
 import "../src/interfaces/ILeveragedVaultFactory.sol";
 contract DummyContract {
     function symbol() external pure returns (string memory) { return "MOCK"; }
+}
+
+/// @dev Mock converter that returns configurable yield/underlying token addresses.
+contract DummyConverter {
+    address public yieldToken;
+    address public underlyingToken;
+    constructor(address _yieldToken, address _underlyingToken) {
+        yieldToken = _yieldToken;
+        underlyingToken = _underlyingToken;
+    }
 }
 
 contract LeveragedVaultFactoryTest is Test {
@@ -37,7 +47,7 @@ contract LeveragedVaultFactoryTest is Test {
         mockYieldToken = address(new DummyContract());
         mockUnderlyingToken = address(new DummyContract());
         mockLeverager = address(new DummyContract());
-        mockConverter = address(new DummyContract());
+        mockConverter = address(new DummyConverter(mockYieldToken, mockUnderlyingToken));
         mockFlashLoanAdapter = address(new DummyContract());
         mockSwapper = address(new DummyContract());
         mockWeth = address(new DummyContract());

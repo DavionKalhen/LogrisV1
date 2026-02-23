@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-pragma solidity 0.8.26;
+pragma solidity 0.8.28;
 
 import "../interfaces/ISwapper.sol";
 import "../interfaces/curve/ICurvePool.sol";
@@ -7,13 +7,15 @@ import {IWETH} from "alchemix-v3/src/interfaces/IWETH.sol";
 import "lib/openzeppelin-contracts/contracts/token/ERC20/IERC20.sol";
 import "lib/openzeppelin-contracts/contracts/token/ERC20/utils/SafeERC20.sol";
 import "lib/openzeppelin-contracts/contracts/access/Ownable.sol";
+import "lib/openzeppelin-contracts/contracts/utils/ReentrancyGuard.sol";
+import "lib/openzeppelin-contracts/contracts/utils/Pausable.sol";
 
 /**
  * @title CurveSwapper
  * @notice Production swapper that integrates with Curve pools for alETH/ETH swaps
  * @dev Designed for the alETH+ETH factory pool on Ethereum mainnet
  */
-contract CurveSwapper is ISwapper, Ownable {
+contract CurveSwapper is ISwapper, Ownable, Pausable, ReentrancyGuard {
     using SafeERC20 for IERC20;
 
     // Constants
@@ -100,7 +102,7 @@ contract CurveSwapper is ISwapper, Ownable {
         uint256 minUnderlyingOut,
         address recipient,
         bytes calldata /* swapData */
-    ) external override returns (uint256 underlyingReceived) {
+    ) external override nonReentrant whenNotPaused returns (uint256 underlyingReceived) {
         if (debtAmount == 0) revert InvalidAmount();
         if (minUnderlyingOut == 0) revert MinOutputRequired();
         if (recipient == address(0)) recipient = msg.sender;
@@ -151,7 +153,7 @@ contract CurveSwapper is ISwapper, Ownable {
         uint256 minDebtOut,
         address recipient,
         bytes calldata /* swapData */
-    ) external override returns (uint256 debtReceived) {
+    ) external override nonReentrant whenNotPaused returns (uint256 debtReceived) {
         if (underlyingAmount == 0) revert InvalidAmount();
         if (minDebtOut == 0) revert MinOutputRequired();
         if (recipient == address(0)) recipient = msg.sender;
@@ -262,6 +264,9 @@ contract CurveSwapper is ISwapper, Ownable {
     }
 
     // ===== ADMIN FUNCTIONS =====
+
+    function pause() external onlyOwner { _pause(); }
+    function unpause() external onlyOwner { _unpause(); }
 
     /**
      * @notice Emergency withdraw stuck tokens (only owner)

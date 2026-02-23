@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-pragma solidity 0.8.26;
+pragma solidity 0.8.28;
 
 /// @title ILeveragerV3
 /// @notice Generic leverager interface that works with any AlchemistV3 vault
@@ -18,17 +18,18 @@ interface ILeveragerV3 {
         uint256 minYieldOut;        // Minimum total yield from deposit + flash conversion
     }
 
-    /// @notice Parameters for deleverage operation
-    struct DeleverageParams {
+    /// @notice Parameters for repay-based deleverage (no DEX swap needed)
+    /// @dev Uses AlchemistV3.repay() with yield tokens instead of burn() with debt tokens.
+    ///      The entire path is deterministic through VaultV2 deposit/redeem.
+    struct DeleverageRepayParams {
         address vault;              // LeveragedVault to operate on
-        address converter;          // ITokenConverter for underlying↔yield
+        address converter;          // ITokenConverter for underlying↔MYT (deterministic)
         address flashLoanAdapter;   // Flash loan source
-        address swapper;            // Debt↔underlying swapper
         address recipient;          // Recipient of underlying returned
-        uint256 withdrawAmount;     // Yield tokens to withdraw
-        uint256 flashLoanAmount;    // Amount to flash loan for repayment
-        uint256 burnAmount;         // Debt to burn
-        uint256 minOutput;          // Minimum output (slippage protection)
+        uint256 withdrawAmount;     // MYT to withdraw after repay frees collateral
+        uint256 flashLoanAmount;    // Underlying to flash loan
+        uint256 repayAmount;        // MYT to repay with (converted from flash loan)
+        uint256 minOutput;          // Minimum underlying returned to recipient
     }
 
     /// @notice Emitted when leverage is executed
@@ -41,12 +42,12 @@ interface ILeveragerV3 {
         uint256 debtMinted
     );
 
-    /// @notice Emitted when deleverage is executed
-    event DeleverageExecuted(
+    /// @notice Emitted when repay-based deleverage is executed
+    event DeleverageRepayExecuted(
         address indexed vault,
         address indexed user,
+        uint256 repayAmount,
         uint256 withdrawAmount,
-        uint256 debtBurned,
         uint256 underlyingReturned
     );
 
@@ -59,9 +60,11 @@ interface ILeveragerV3 {
     /// @param params Leverage parameters including vault, adapters, and amounts
     function leverage(LeverageParams calldata params) external;
 
-    /// @notice Execute deleverage operation
-    /// @param params Deleverage parameters including vault, adapters, and amounts
-    function deleverage(DeleverageParams calldata params) external;
+    /// @notice Execute repay-based deleverage operation (no DEX swap)
+    /// @dev Cannot be called in the same block as leverage() due to CannotRepayOnMintBlock.
+    ///      Access control: msg.sender must equal params.vault (only the vault can initiate deleverage).
+    /// @param params Deleverage parameters including vault, converter, and amounts
+    function deleverageRepay(DeleverageRepayParams calldata params) external;
 
     /// @notice Check if a converter is approved
     function isApprovedConverter(address converter) external view returns (bool);

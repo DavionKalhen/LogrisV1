@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-pragma solidity 0.8.26;
+pragma solidity 0.8.28;
 
 import "forge-std/Test.sol";
 import "../src/LeveragedVault.sol";
@@ -83,7 +83,7 @@ contract LeveragedVaultPauseTest is Test {
     function testPauseBlocksLeverage() public {
         vault.pause();
         vm.expectRevert(abi.encodeWithSignature("EnforcedPause()"));
-        vault.leverage(1, 0, 0, 0, 0);
+        vault.leverage(1, 0, 0, 0, 0, 0);
     }
 
     function testPauseAllowsWithdrawUnderlying() public {
@@ -98,14 +98,14 @@ contract LeveragedVaultPauseTest is Test {
 
         // Withdrawal should succeed even when paused
         vm.prank(user);
-        vault.withdrawUnderlying(shares, 0, 0, 0);
+        vault.withdrawUnderlying(shares, 0, 0, 0, 0);
         assertEq(vault.balanceOf(user), 0, "User should have withdrawn");
     }
 
     function testPauseStillBlocksLeverageAtomic() public {
         vault.pause();
         vm.expectRevert(abi.encodeWithSignature("EnforcedPause()"));
-        vault.leverageAtomic(1 ether, 100, 200);
+        vault.leverageAtomic(1 ether, 100, 200, 0);
     }
 
     function testUnpauseAllowsDeposit() public {

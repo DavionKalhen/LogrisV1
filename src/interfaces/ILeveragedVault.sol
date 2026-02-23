@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-pragma solidity 0.8.26;
+pragma solidity 0.8.28;
 
 import "./IERC4626.sol";
 
@@ -72,6 +72,11 @@ interface ILeveragedVault is IERC4626 {
     /// @return amount Total withdrawable underlying amount.
     function getTotalWithdrawCapacity() external view returns (uint256 amount);
 
+    /// @notice Synchronizes the vault's Alchemist position state.
+    /// @dev Calls alchemist.poke() to sync collateral/debt accounting for off-chain queries.
+    ///      No-op if the vault has no position yet. Callable by anyone.
+    function pokePosition() external;
+
     /// @notice Converts underlying token amount to vault shares.
     /// @return shares Equivalent vault shares for the given underlying amount.
     function convertUnderlyingTokensToShares(uint256 amount) external view returns (uint256 shares);
@@ -115,9 +120,12 @@ interface ILeveragedVault is IERC4626 {
 
     /// @notice Calculate withdraw parameters using vault's default slippage settings
     /// @param shares Amount of vault shares to withdraw
+    /// @return flashLoanAmount Amount to flash loan for deleveraging
+    /// @return repayAmount Amount of MYT to repay debt with (0 if no deleverage needed)
+    /// @return minUnderlyingOut Minimum underlying tokens to receive
     function getWithdrawUnderlyingParameters(uint256 shares) external view returns (
         uint256 flashLoanAmount,
-        uint256 burnAmount,
+        uint256 repayAmount,
         uint256 minUnderlyingOut
     );
 
@@ -126,7 +134,7 @@ interface ILeveragedVault is IERC4626 {
     /// @param underlyingSlippageBasisPoints Slippage tolerance for underlying token operations
     /// @param debtSlippageBasisPoints Slippage tolerance for debt token swap
     /// @return flashLoanAmount Amount to flash loan for deleveraging
-    /// @return burnAmount Amount of debt tokens to burn
+    /// @return repayAmount Amount of MYT to repay debt with (0 if no deleverage needed)
     /// @return minUnderlyingOut Minimum underlying tokens to receive
     function getWithdrawUnderlyingParameters(
         uint256 shares,
@@ -134,7 +142,7 @@ interface ILeveragedVault is IERC4626 {
         uint32 debtSlippageBasisPoints
     ) external view returns (
         uint256 flashLoanAmount,
-        uint256 burnAmount,
+        uint256 repayAmount,
         uint256 minUnderlyingOut
     );
 
@@ -165,12 +173,14 @@ interface ILeveragedVault is IERC4626 {
     /// @param underlyingDepositMin Minimum yield tokens from deposit (slippage protection)
     /// @param mintAmount Amount of debt tokens to mint
     /// @param debtTradeMin Minimum underlying from debt swap (slippage protection)
+    /// @param deadline Timestamp after which the transaction reverts (0 = no deadline)
     function leverage(
         uint256 clampedDeposit,
         uint256 flashLoanAmount,
         uint256 underlyingDepositMin,
         uint256 mintAmount,
-        uint256 debtTradeMin
+        uint256 debtTradeMin,
+        uint256 deadline
     ) external;
 
     /// @notice Execute leverage with auto-computed parameters.
@@ -179,26 +189,31 @@ interface ILeveragedVault is IERC4626 {
     /// @param depositAmount Amount of underlying to leverage
     /// @param underlyingSlippageBasisPoints Slippage tolerance for underlying operations
     /// @param debtSlippageBasisPoints Slippage tolerance for debt swap
+    /// @param deadline Timestamp after which the transaction reverts (0 = no deadline)
     function leverageAtomic(
         uint256 depositAmount,
         uint32 underlyingSlippageBasisPoints,
-        uint32 debtSlippageBasisPoints
+        uint32 debtSlippageBasisPoints,
+        uint256 deadline
     ) external;
 
     // ============ Withdraw Functions ============
 
     /// @notice Withdraw underlying tokens with explicit parameters
-    /// @dev Parameters should be obtained from getWithdrawUnderlyingParameters()
+    /// @dev Parameters should be obtained from getWithdrawUnderlyingParameters().
+    ///      Uses repay-based deleverage (no DEX swap) when repayAmount > 0.
     /// @param shares Amount of vault shares to burn
     /// @param flashLoanAmount Amount to flash loan for deleveraging
-    /// @param burnAmount Amount of debt to burn
+    /// @param repayAmount Amount of MYT to repay debt with (0 = no deleverage needed)
     /// @param minUnderlyingOut Minimum underlying to receive (slippage protection)
+    /// @param deadline Timestamp after which the transaction reverts (0 = no deadline)
     /// @return underlyingAmount Amount of underlying tokens withdrawn
     function withdrawUnderlying(
         uint256 shares,
         uint256 flashLoanAmount,
-        uint256 burnAmount,
-        uint256 minUnderlyingOut
+        uint256 repayAmount,
+        uint256 minUnderlyingOut,
+        uint256 deadline
     ) external returns (uint256 underlyingAmount);
 
     /// @notice Withdraw underlying tokens with auto-computed parameters
@@ -206,10 +221,12 @@ interface ILeveragedVault is IERC4626 {
     /// @param shares Amount of vault shares to withdraw
     /// @param underlyingSlippageBasisPoints Slippage tolerance for underlying operations
     /// @param debtSlippageBasisPoints Slippage tolerance for debt swap
+    /// @param deadline Timestamp after which the transaction reverts (0 = no deadline)
     /// @return underlyingAmount Amount of underlying tokens withdrawn
     function withdrawUnderlyingAtomic(
         uint256 shares,
         uint32 underlyingSlippageBasisPoints,
-        uint32 debtSlippageBasisPoints
+        uint32 debtSlippageBasisPoints,
+        uint256 deadline
     ) external returns (uint256 underlyingAmount);
 }

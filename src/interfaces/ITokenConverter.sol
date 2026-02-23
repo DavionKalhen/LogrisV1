@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-pragma solidity 0.8.26;
+pragma solidity 0.8.28;
 
 /// @title ITokenConverter
 /// @notice Converts between underlying and yield tokens for leverage operations

@@ -1,146 +1,99 @@
 // SPDX-License-Identifier: MIT
-pragma solidity 0.8.26;
+pragma solidity 0.8.28;
 
-import "forge-std/Test.sol";
+import "./LocalAlchemistV3Base.t.sol";
 import "../src/leveragers/V3Leverager.sol";
+import "../src/converters/MYTConverter.sol";
 import "../src/interfaces/ILeveragerV3.sol";
 import "../src/interfaces/ITokenConverter.sol";
 import "../src/interfaces/ISwapper.sol";
-import "../src/interfaces/flashloan/IFlashLoanAdapter.sol";
-import "../src/interfaces/flashloan/IFlashLoanCallback.sol";
 import "../src/interfaces/ILeveragedVaultCallback.sol";
+import {IFlashLoanAdapter} from "../src/interfaces/flashloan/IFlashLoanAdapter.sol";
+import {IFlashLoanCallback} from "../src/interfaces/flashloan/IFlashLoanCallback.sol";
+import {IAlchemistV3} from "../alchemix-v3/src/interfaces/IAlchemistV3.sol";
+import {IAlchemistV3Position} from "../alchemix-v3/src/interfaces/IAlchemistV3Position.sol";
 import "lib/openzeppelin-contracts/contracts/token/ERC20/IERC20.sol";
 import "lib/openzeppelin-contracts/contracts/token/ERC20/utils/SafeERC20.sol";
-import "../alchemix-v3/src/interfaces/IAlchemistV3.sol";
 
-// ============ Mock Contracts ============
+// ============ Lightweight Mocks for Modular Tests ============
 
-contract MockERC20 {
-    string public name;
-    string public symbol;
-    uint8 public decimals = 18;
+/// @dev MockVault that interacts with a real AlchemistV3 via ILeveragedVaultCallback.
+///      Exposes getYieldToken(), getUnderlyingToken(), and alchemist() so V3Leverager
+///      can validate converter tokens and read the debt token.
+contract ModularMockVault is ILeveragedVaultCallback {
+    using SafeERC20 for IERC20;
 
-    mapping(address => uint256) public balanceOf;
-    mapping(address => mapping(address => uint256)) public allowance;
-    uint256 public totalSupply;
-
-    constructor(string memory _name, string memory _symbol) {
-        name = _name;
-        symbol = _symbol;
-    }
-
-    function mint(address to, uint256 amount) external {
-        balanceOf[to] += amount;
-        totalSupply += amount;
-    }
-
-    function transfer(address to, uint256 amount) external returns (bool) {
-        balanceOf[msg.sender] -= amount;
-        balanceOf[to] += amount;
-        return true;
-    }
-
-    function transferFrom(address from, address to, uint256 amount) external returns (bool) {
-        if (allowance[from][msg.sender] != type(uint256).max) {
-            allowance[from][msg.sender] -= amount;
-        }
-        balanceOf[from] -= amount;
-        balanceOf[to] += amount;
-        return true;
-    }
-
-    function approve(address spender, uint256 amount) external returns (bool) {
-        allowance[msg.sender][spender] = amount;
-        return true;
-    }
-}
-
-contract MockAlchemistV3 {
-    address public debtToken;
+    address public alchemistAddr;
+    uint256 public vaultPositionId;
+    address public leverager;
+    address public underlyingToken;
     address public yieldToken;
+    bool private positionCreated;
 
-    struct Position {
-        uint256 collateral;
-        uint256 debt;
+    modifier onlyLeverager() {
+        require(msg.sender == leverager, "Only leverager");
+        _;
     }
-    mapping(uint256 => Position) public positions;
-    uint256 public nextPositionId = 1;
 
-    constructor(address _debtToken, address _yieldToken) {
-        debtToken = _debtToken;
+    constructor(address _alchemist, address _leverager, address _underlyingToken, address _yieldToken) {
+        alchemistAddr = _alchemist;
+        leverager = _leverager;
+        underlyingToken = _underlyingToken;
         yieldToken = _yieldToken;
     }
 
-    function deposit(uint256 amount, address, uint256 positionId) external returns (uint256) {
-        IERC20(yieldToken).transferFrom(msg.sender, address(this), amount);
-        if (positionId == 0) {
-            positionId = nextPositionId++;
+    /// @dev Returns the alchemist as IAlchemistV3 (needed by V3Leverager._getDebtToken)
+    function alchemist() external view returns (IAlchemistV3) {
+        return IAlchemistV3(alchemistAddr);
+    }
+
+    function getYieldToken() external view returns (address) {
+        return yieldToken;
+    }
+
+    function getUnderlyingToken() external view returns (address) {
+        return underlyingToken;
+    }
+
+    function vaultDepositYieldTokens(uint256 amount) external override onlyLeverager returns (uint256) {
+        IERC20(yieldToken).safeTransferFrom(msg.sender, address(this), amount);
+        IERC20(yieldToken).approve(alchemistAddr, amount);
+
+        if (!positionCreated) {
+            IAlchemistV3(alchemistAddr).deposit(amount, address(this), 0);
+            // Get the position ID from the NFT
+            address nftAddr = IAlchemistV3(alchemistAddr).alchemistPositionNFT();
+            vaultPositionId = IAlchemistV3Position(nftAddr).tokenOfOwnerByIndex(address(this), 0);
+            positionCreated = true;
+        } else {
+            IAlchemistV3(alchemistAddr).deposit(amount, address(this), vaultPositionId);
         }
-        positions[positionId].collateral += amount;
         return amount;
     }
 
-    function mint(uint256 positionId, uint256 amount, address recipient) external {
-        positions[positionId].debt += amount;
-        MockERC20(debtToken).mint(recipient, amount);
+    function vaultMintDebtTokens(uint256 amount, address recipient) external override onlyLeverager {
+        IAlchemistV3(alchemistAddr).mint(vaultPositionId, amount, recipient);
     }
 
-    function burn(uint256 amount, uint256 positionId) external returns (uint256) {
-        IERC20(debtToken).transferFrom(msg.sender, address(this), amount);
-        positions[positionId].debt -= amount;
-        return amount;
+    function vaultWithdrawYieldTokens(uint256 amount, address recipient) external override onlyLeverager returns (uint256) {
+        return IAlchemistV3(alchemistAddr).withdraw(amount, recipient, vaultPositionId);
     }
 
-    function withdraw(uint256 amount, address recipient, uint256 positionId) external returns (uint256) {
-        positions[positionId].collateral -= amount;
-        IERC20(yieldToken).transfer(recipient, amount);
-        return amount;
+    function vaultRepayWithYieldTokens(uint256 amount) external override onlyLeverager returns (uint256) {
+        IERC20(yieldToken).safeTransferFrom(msg.sender, address(this), amount);
+        IERC20(yieldToken).approve(alchemistAddr, amount);
+        return IAlchemistV3(alchemistAddr).repay(amount, vaultPositionId);
     }
 
-    function getCDP(uint256 positionId) external view returns (uint256, uint256, uint256) {
-        return (positions[positionId].collateral, positions[positionId].debt, 0);
-    }
-
-    function approveMint(uint256, address, uint256) external {}
-}
-
-contract MockTokenConverter is ITokenConverter {
-    address public override yieldToken;
-    address public override underlyingToken;
-
-    constructor(address _underlying, address _yield) {
-        underlyingToken = _underlying;
-        yieldToken = _yield;
-    }
-
-    function toYield(uint256 amount, address recipient, uint256 minYieldOut) external override returns (uint256) {
-        IERC20(underlyingToken).transferFrom(msg.sender, address(this), amount);
-        // 1:1 conversion for simplicity
-        MockERC20(yieldToken).mint(recipient, amount);
-        require(amount >= minYieldOut, "Insufficient yield output");
-        return amount;
-    }
-
-    function toUnderlying(
-        uint256 amount,
-        address recipient,
-        uint256 /* minUnderlyingOut */
-    ) external override returns (uint256) {
-        IERC20(yieldToken).transferFrom(msg.sender, address(this), amount);
-        MockERC20(underlyingToken).mint(recipient, amount);
-        return amount;
-    }
-
-    function previewToYield(uint256 amount) external pure override returns (uint256) {
-        return amount;
-    }
-
-    function previewToUnderlying(uint256 amount) external pure override returns (uint256) {
-        return amount;
+    function getVaultPositionId() external view override returns (uint256) {
+        return vaultPositionId;
     }
 }
 
-contract MockSwapper is ISwapper {
+/// @dev 1% fee swapper: debt -> underlying with 1% loss. Mints underlying (MockERC20WithMetadata).
+contract ModularSwapper1Pct is ISwapper {
+    using SafeERC20 for IERC20;
+
     address public debtToken;
     address public underlyingToken;
 
@@ -156,34 +109,21 @@ contract MockSwapper is ISwapper {
         bytes calldata
     ) external override returns (uint256) {
         IERC20(debtToken).transferFrom(msg.sender, address(this), debtAmount);
-        // 99% conversion (1% fee)
         uint256 output = debtAmount * 99 / 100;
-        MockERC20(underlyingToken).mint(recipient, output);
-        emit SwapExecuted(debtToken, underlyingToken, debtAmount, output, recipient);
+        MockERC20WithMetadata(underlyingToken).mint(recipient, output);
         return output;
     }
 
-    function swapUnderlyingToDebt(
-        uint256 underlyingAmount,
-        uint256,
-        address recipient,
-        bytes calldata
-    ) external override returns (uint256) {
-        IERC20(underlyingToken).transferFrom(msg.sender, address(this), underlyingAmount);
-        uint256 output = underlyingAmount * 99 / 100;
-        MockERC20(debtToken).mint(recipient, output);
-        emit SwapExecuted(underlyingToken, debtToken, underlyingAmount, output, recipient);
-        return output;
+    function swapUnderlyingToDebt(uint256, uint256, address, bytes calldata) external pure override returns (uint256) {
+        return 0;
     }
 
-    function previewSwapDebtToUnderlying(uint256 debtAmount) external pure override returns (uint256, uint256) {
-        uint256 expected = debtAmount * 99 / 100;
-        return (expected, expected * 95 / 100);
+    function previewSwapDebtToUnderlying(uint256 d) external pure override returns (uint256, uint256) {
+        return (d * 99 / 100, d * 95 / 100);
     }
 
-    function previewSwapUnderlyingToDebt(uint256 underlyingAmount) external pure override returns (uint256, uint256) {
-        uint256 expected = underlyingAmount * 99 / 100;
-        return (expected, expected * 95 / 100);
+    function previewSwapUnderlyingToDebt(uint256 u) external pure override returns (uint256, uint256) {
+        return (u * 99 / 100, u * 95 / 100);
     }
 
     function getDebtToUnderlyingRate() external pure override returns (uint256) { return 0.99e18; }
@@ -193,13 +133,14 @@ contract MockSwapper is ISwapper {
     function isSupportedPair(address, address) external pure override returns (bool) { return true; }
 }
 
-contract MockFlashLoanAdapter is IFlashLoanAdapter {
+/// @dev Flash loan adapter that mints underlying for the loan and charges zero fee.
+contract ModularFlashLoanAdapter is IFlashLoanAdapter {
     using SafeERC20 for IERC20;
 
-    address public token;
+    address public immutable underlyingToken;
 
-    constructor(address _token) {
-        token = _token;
+    constructor(address _underlyingToken) {
+        underlyingToken = _underlyingToken;
     }
 
     function flashLoan(
@@ -208,22 +149,18 @@ contract MockFlashLoanAdapter is IFlashLoanAdapter {
         address recipient,
         bytes calldata data
     ) external override {
-        // Mint tokens for flash loan
-        MockERC20(_token).mint(address(this), amount);
+        MockERC20WithMetadata(_token).mint(address(this), amount);
         IERC20(_token).safeTransfer(recipient, amount);
 
-        // Call recipient
         IFlashLoanCallback(recipient).onFlashLoanReceived(
             msg.sender,
             _token,
             amount,
-            0, // no fee
+            0,
             data
         );
 
-        // Verify repayment
         require(IERC20(_token).balanceOf(address(this)) >= amount, "Flash loan not repaid");
-
         emit FlashLoanExecuted(_token, amount, 0, recipient);
     }
 
@@ -233,126 +170,56 @@ contract MockFlashLoanAdapter is IFlashLoanAdapter {
     function getProvider() external view override returns (address) { return address(this); }
 }
 
-contract MockVault is ILeveragedVaultCallback {
-    using SafeERC20 for IERC20;
-
-    MockAlchemistV3 public alchemist;
-    uint256 public vaultPositionId;
-    address public leverager;
-    address public underlyingToken;
-    bool private positionCreated;
-
-    modifier onlyLeverager() {
-        require(msg.sender == leverager, "Only leverager");
-        _;
-    }
-
-    constructor(address _alchemist, address _leverager, address _underlyingToken) {
-        alchemist = MockAlchemistV3(_alchemist);
-        leverager = _leverager;
-        underlyingToken = _underlyingToken;
-    }
-
-    function vaultDepositYieldTokens(uint256 amount) external override onlyLeverager returns (uint256) {
-        address yieldToken = alchemist.yieldToken();
-        IERC20(yieldToken).safeTransferFrom(msg.sender, address(this), amount);
-        IERC20(yieldToken).approve(address(alchemist), amount);
-
-        if (!positionCreated) {
-            // Create new position - pass 0 to indicate new position
-            alchemist.deposit(amount, address(this), 0);
-            vaultPositionId = alchemist.nextPositionId() - 1;
-            positionCreated = true;
-        } else {
-            alchemist.deposit(amount, address(this), vaultPositionId);
-        }
-        return amount;
-    }
-
-    function vaultMintDebtTokens(uint256 amount, address recipient) external override onlyLeverager {
-        alchemist.mint(vaultPositionId, amount, recipient);
-    }
-
-    function vaultWithdrawYieldTokens(uint256 amount, address recipient) external override onlyLeverager returns (uint256) {
-        return alchemist.withdraw(amount, recipient, vaultPositionId);
-    }
-
-    function vaultBurnDebtTokens(uint256 amount) external override onlyLeverager {
-        address debtToken = alchemist.debtToken();
-        IERC20(debtToken).safeTransferFrom(msg.sender, address(this), amount);
-        IERC20(debtToken).approve(address(alchemist), amount);
-        alchemist.burn(amount, vaultPositionId);
-    }
-
-    function getVaultPositionId() external view override returns (uint256) {
-        return vaultPositionId;
-    }
-
-    function getYieldToken() external view returns (address) {
-        return alchemist.yieldToken();
-    }
-
-    function getUnderlyingToken() external view returns (address) {
-        return underlyingToken;
-    }
-}
-
 // ============ Test Contract ============
 
-contract V3LeveragerModularTest is Test {
+contract V3LeveragerModularTest is LocalAlchemistV3Base {
     V3Leverager public leverager;
 
-    MockERC20 public underlyingToken;
-    MockERC20 public yieldToken;
-    MockERC20 public debtToken;
-
-    MockAlchemistV3 public alchemist;
-    MockTokenConverter public converter;
-    MockSwapper public swapper;
-    MockFlashLoanAdapter public flashLoanAdapter;
-    MockVault public vault;
+    MYTConverter public converter;
+    ModularSwapper1Pct public swapper;
+    ModularFlashLoanAdapter public flashLoanAdapter;
+    ModularMockVault public vault;
 
     address public owner = makeAddr("owner");
     address public alice = makeAddr("alice");
     address public bob = makeAddr("bob");
 
     function setUp() public {
-        // Deploy tokens
-        underlyingToken = new MockERC20("Underlying", "UND");
-        yieldToken = new MockERC20("Yield", "YLD");
-        debtToken = new MockERC20("Debt", "DBT");
-
-        // Deploy alchemist
-        alchemist = new MockAlchemistV3(address(debtToken), address(yieldToken));
+        _deployLocalAlchemistV3();
 
         // Deploy adapters
-        converter = new MockTokenConverter(address(underlyingToken), address(yieldToken));
-        swapper = new MockSwapper(address(debtToken), address(underlyingToken));
-        flashLoanAdapter = new MockFlashLoanAdapter(address(underlyingToken));
+        converter = new MYTConverter(address(mytVault), address(underlying));
+        swapper = new ModularSwapper1Pct(address(debtToken), address(underlying));
+        flashLoanAdapter = new ModularFlashLoanAdapter(address(underlying));
 
         // Deploy leverager
         vm.prank(owner);
         leverager = new V3Leverager(owner);
 
-        // Deploy vault (needs leverager address)
-        vault = new MockVault(address(alchemist), address(leverager), address(underlyingToken));
+        // Deploy mock vault wired to real AlchemistV3
+        vault = new ModularMockVault(
+            address(alchemist),
+            address(leverager),
+            address(underlying),
+            address(mytVault)
+        );
 
-        // Approve adapters
+        // Approve adapters on leverager
         vm.startPrank(owner);
         leverager.setConverterApproval(address(converter), true);
         leverager.setSwapperApproval(address(swapper), true);
         leverager.setFlashLoanAdapterApproval(address(flashLoanAdapter), true);
         vm.stopPrank();
 
-        // Fund users with yield tokens
-        yieldToken.mint(alice, 100 ether);
-        yieldToken.mint(bob, 100 ether);
+        // Fund users with MYT (yield tokens)
+        _fundWithMYT(alice, 100 ether);
+        _fundWithMYT(bob, 100 ether);
     }
 
     // ============ Registry Tests ============
 
     function test_OwnerCanApproveConverter() public {
-        MockTokenConverter newConverter = new MockTokenConverter(address(underlyingToken), address(yieldToken));
+        MYTConverter newConverter = new MYTConverter(address(mytVault), address(underlying));
 
         assertFalse(leverager.isApprovedConverter(address(newConverter)));
 
@@ -372,7 +239,7 @@ contract V3LeveragerModularTest is Test {
     }
 
     function test_NonOwnerCannotApproveConverter() public {
-        MockTokenConverter newConverter = new MockTokenConverter(address(underlyingToken), address(yieldToken));
+        MYTConverter newConverter = new MYTConverter(address(mytVault), address(underlying));
 
         vm.prank(alice);
         vm.expectRevert();
@@ -380,7 +247,7 @@ contract V3LeveragerModularTest is Test {
     }
 
     function test_OwnerCanApproveFlashLoanAdapter() public {
-        MockFlashLoanAdapter newAdapter = new MockFlashLoanAdapter(address(underlyingToken));
+        ModularFlashLoanAdapter newAdapter = new ModularFlashLoanAdapter(address(underlying));
 
         assertFalse(leverager.isApprovedFlashLoanAdapter(address(newAdapter)));
 
@@ -391,7 +258,7 @@ contract V3LeveragerModularTest is Test {
     }
 
     function test_OwnerCanApproveSwapper() public {
-        MockSwapper newSwapper = new MockSwapper(address(debtToken), address(underlyingToken));
+        ModularSwapper1Pct newSwapper = new ModularSwapper1Pct(address(debtToken), address(underlying));
 
         assertFalse(leverager.isApprovedSwapper(address(newSwapper)));
 
@@ -402,9 +269,9 @@ contract V3LeveragerModularTest is Test {
     }
 
     function test_BatchApprove() public {
-        MockTokenConverter newConverter = new MockTokenConverter(address(underlyingToken), address(yieldToken));
-        MockFlashLoanAdapter newAdapter = new MockFlashLoanAdapter(address(underlyingToken));
-        MockSwapper newSwapper = new MockSwapper(address(debtToken), address(underlyingToken));
+        MYTConverter newConverter = new MYTConverter(address(mytVault), address(underlying));
+        ModularFlashLoanAdapter newAdapter = new ModularFlashLoanAdapter(address(underlying));
+        ModularSwapper1Pct newSwapper = new ModularSwapper1Pct(address(debtToken), address(underlying));
 
         address[] memory converters = new address[](1);
         converters[0] = address(newConverter);
@@ -431,7 +298,7 @@ contract V3LeveragerModularTest is Test {
         uint256 mintAmount = 25 ether;
 
         vm.startPrank(alice);
-        yieldToken.approve(address(leverager), depositAmount);
+        IERC20(address(mytVault)).approve(address(leverager), depositAmount);
 
         ILeveragerV3.LeverageParams memory params = ILeveragerV3.LeverageParams({
             vault: address(vault),
@@ -441,26 +308,26 @@ contract V3LeveragerModularTest is Test {
             depositAmount: depositAmount,
             flashLoanAmount: flashLoanAmount,
             mintAmount: mintAmount,
-            minSwapOutput: 1, // Just need some output
+            minSwapOutput: 1,
             minYieldOut: 0
         });
 
         leverager.leverage(params);
         vm.stopPrank();
 
-        // Verify position state
+        // Verify position state via real AlchemistV3
         (uint256 collateral, uint256 debt,) = alchemist.getCDP(vault.getVaultPositionId());
 
-        // Total collateral = deposit + flash loan converted to yield
+        // Total collateral = deposit (10 MYT) + flash loan converted to MYT (20 underlying -> ~20 MYT)
         assertEq(collateral, depositAmount + flashLoanAmount);
         assertEq(debt, mintAmount);
     }
 
     function test_LeverageRevertsWithUnapprovedConverter() public {
-        MockTokenConverter unapprovedConverter = new MockTokenConverter(address(underlyingToken), address(yieldToken));
+        MYTConverter unapprovedConverter = new MYTConverter(address(mytVault), address(underlying));
 
         vm.startPrank(alice);
-        yieldToken.approve(address(leverager), 10 ether);
+        IERC20(address(mytVault)).approve(address(leverager), 10 ether);
 
         ILeveragerV3.LeverageParams memory params = ILeveragerV3.LeverageParams({
             vault: address(vault),
@@ -480,10 +347,10 @@ contract V3LeveragerModularTest is Test {
     }
 
     function test_LeverageRevertsWithUnapprovedFlashLoanAdapter() public {
-        MockFlashLoanAdapter unapprovedAdapter = new MockFlashLoanAdapter(address(underlyingToken));
+        ModularFlashLoanAdapter unapprovedAdapter = new ModularFlashLoanAdapter(address(underlying));
 
         vm.startPrank(alice);
-        yieldToken.approve(address(leverager), 10 ether);
+        IERC20(address(mytVault)).approve(address(leverager), 10 ether);
 
         ILeveragerV3.LeverageParams memory params = ILeveragerV3.LeverageParams({
             vault: address(vault),
@@ -503,10 +370,10 @@ contract V3LeveragerModularTest is Test {
     }
 
     function test_LeverageRevertsWithUnapprovedSwapper() public {
-        MockSwapper unapprovedSwapper = new MockSwapper(address(debtToken), address(underlyingToken));
+        ModularSwapper1Pct unapprovedSwapper = new ModularSwapper1Pct(address(debtToken), address(underlying));
 
         vm.startPrank(alice);
-        yieldToken.approve(address(leverager), 10 ether);
+        IERC20(address(mytVault)).approve(address(leverager), 10 ether);
 
         ILeveragerV3.LeverageParams memory params = ILeveragerV3.LeverageParams({
             vault: address(vault),
@@ -526,8 +393,32 @@ contract V3LeveragerModularTest is Test {
     }
 
     function test_LeverageWithZeroDeposit() public {
+        // Zero-deposit leverage: depositAmount=0 but flash loan adds collateral.
+        // With 111% collateralization and 1% swap fee, a fresh position can't self-repay
+        // because maxDebt * 0.99 < flashLoanAmount. Seed the vault's position with existing
+        // collateral so the combined position supports the required mint.
+        //
+        // 1. Seed: deposit 30 MYT directly into vault's alchemist position (via normal leverage)
         vm.startPrank(alice);
+        IERC20(address(mytVault)).approve(address(leverager), 30 ether);
 
+        ILeveragerV3.LeverageParams memory seedParams = ILeveragerV3.LeverageParams({
+            vault: address(vault),
+            converter: address(converter),
+            flashLoanAdapter: address(flashLoanAdapter),
+            swapper: address(swapper),
+            depositAmount: 30 ether,
+            flashLoanAmount: 0,
+            mintAmount: 1, // minimal mint to satisfy leverager's unconditional mint call
+            minSwapOutput: 0,
+            minYieldOut: 0
+        });
+        leverager.leverage(seedParams);
+
+        // Now do a zero-deposit leverage with flash loan against the existing position.
+        // Existing collateral = 30, existing debt = 1.
+        // flash = 20. After deposit: collateral = 50. maxDebt = 50/1.111 ≈ 45.
+        // mint = 25. total debt = 26. swap output = 25 * 0.99 = 24.75 > 20 flash. Works!
         ILeveragerV3.LeverageParams memory params = ILeveragerV3.LeverageParams({
             vault: address(vault),
             converter: address(converter),
@@ -544,8 +435,9 @@ contract V3LeveragerModularTest is Test {
         vm.stopPrank();
 
         (uint256 collateral, uint256 debt,) = alchemist.getCDP(vault.getVaultPositionId());
-        assertEq(collateral, 20 ether); // Only flash loan
-        assertEq(debt, 25 ether);
+        assertEq(collateral, 50 ether); // 30 seed + 20 flash
+        // Debt = 25 ether + seed mint (1 wei). Rounding in AlchemistV3._sync may add 1 wei.
+        assertApproxEqAbs(debt, 25 ether, 2); // 25 ether from second leverage + negligible seed
     }
 
     // ============ Deleverage Tests ============
@@ -553,7 +445,7 @@ contract V3LeveragerModularTest is Test {
     function test_DeleverageWithApprovedAdapters() public {
         // First leverage to create a position
         vm.startPrank(alice);
-        yieldToken.approve(address(leverager), 10 ether);
+        IERC20(address(mytVault)).approve(address(leverager), 10 ether);
 
         ILeveragerV3.LeverageParams memory leverageParams = ILeveragerV3.LeverageParams({
             vault: address(vault),
@@ -568,59 +460,67 @@ contract V3LeveragerModularTest is Test {
         });
         leverager.leverage(leverageParams);
 
-        // Now deleverage
-        ILeveragerV3.DeleverageParams memory deleverageParams = ILeveragerV3.DeleverageParams({
+        // Must advance block to avoid CannotRepayOnMintBlock
+        vm.roll(block.number + 1);
+        vm.stopPrank();
+
+        // Now deleverage: flash 12 underlying -> convert to ~12 MYT -> repay 12 MYT ->
+        // withdraw 15 MYT -> convert 15 MYT -> ~15 underlying ->
+        // repay flash loan (12) -> surplus 3 to user
+        // Need repayAmount=12 so that remaining debt (13) * 1.111 < 30, leaving enough free to withdraw 15.
+        ILeveragerV3.DeleverageRepayParams memory deleverageParams = ILeveragerV3.DeleverageRepayParams({
             vault: address(vault),
             converter: address(converter),
             flashLoanAdapter: address(flashLoanAdapter),
-            swapper: address(swapper),
             recipient: alice,
             withdrawAmount: 15 ether,
-            flashLoanAmount: 10 ether,
-            burnAmount: 9 ether,
+            flashLoanAmount: 12 ether,
+            repayAmount: 12 ether,
             minOutput: 1
         });
 
-        leverager.deleverage(deleverageParams);
-        vm.stopPrank();
+        vm.prank(address(vault));
+        leverager.deleverageRepay(deleverageParams);
 
         // Position should be reduced
         (uint256 collateral, uint256 debt,) = alchemist.getCDP(vault.getVaultPositionId());
         assertEq(collateral, 30 ether - 15 ether); // Withdrew 15
-        assertLt(debt, 25 ether); // Some debt was burned
+        assertEq(debt, 25 ether - 12 ether);        // 12 was repaid
     }
 
     function test_DeleverageRevertsWithUnapprovedConverter() public {
-        MockTokenConverter unapprovedConverter = new MockTokenConverter(address(underlyingToken), address(yieldToken));
+        MYTConverter unapprovedConverter = new MYTConverter(address(mytVault), address(underlying));
 
-        vm.startPrank(alice);
-
-        ILeveragerV3.DeleverageParams memory params = ILeveragerV3.DeleverageParams({
+        ILeveragerV3.DeleverageRepayParams memory params = ILeveragerV3.DeleverageRepayParams({
             vault: address(vault),
             converter: address(unapprovedConverter),
             flashLoanAdapter: address(flashLoanAdapter),
-            swapper: address(swapper),
             recipient: alice,
             withdrawAmount: 10 ether,
             flashLoanAmount: 10 ether,
-            burnAmount: 10 ether,
+            repayAmount: 10 ether,
             minOutput: 1
         });
 
+        vm.prank(address(vault));
         vm.expectRevert(V3Leverager.UnapprovedConverter.selector);
-        leverager.deleverage(params);
-        vm.stopPrank();
+        leverager.deleverageRepay(params);
     }
 
     // ============ Multi-Vault Tests ============
 
     function test_SameLeveragerServesMultipleVaults() public {
-        // Deploy second vault
-        MockVault vault2 = new MockVault(address(alchemist), address(leverager), address(underlyingToken));
+        // Deploy second vault backed by same real AlchemistV3
+        ModularMockVault vault2 = new ModularMockVault(
+            address(alchemist),
+            address(leverager),
+            address(underlying),
+            address(mytVault)
+        );
 
         // Alice leverages vault 1
         vm.startPrank(alice);
-        yieldToken.approve(address(leverager), 10 ether);
+        IERC20(address(mytVault)).approve(address(leverager), 10 ether);
 
         ILeveragerV3.LeverageParams memory params1 = ILeveragerV3.LeverageParams({
             vault: address(vault),
@@ -638,7 +538,7 @@ contract V3LeveragerModularTest is Test {
 
         // Bob leverages vault 2
         vm.startPrank(bob);
-        yieldToken.approve(address(leverager), 15 ether);
+        IERC20(address(mytVault)).approve(address(leverager), 15 ether);
 
         ILeveragerV3.LeverageParams memory params2 = ILeveragerV3.LeverageParams({
             vault: address(vault2),
@@ -654,7 +554,7 @@ contract V3LeveragerModularTest is Test {
         leverager.leverage(params2);
         vm.stopPrank();
 
-        // Verify both vaults have positions
+        // Verify both vaults have independent positions
         (uint256 collateral1, uint256 debt1,) = alchemist.getCDP(vault.getVaultPositionId());
         (uint256 collateral2, uint256 debt2,) = alchemist.getCDP(vault2.getVaultPositionId());
 
@@ -668,8 +568,8 @@ contract V3LeveragerModularTest is Test {
 
     function test_SwitchBetweenAdapters() public {
         // Deploy alternative adapters
-        MockFlashLoanAdapter altFlashLoan = new MockFlashLoanAdapter(address(underlyingToken));
-        MockSwapper altSwapper = new MockSwapper(address(debtToken), address(underlyingToken));
+        ModularFlashLoanAdapter altFlashLoan = new ModularFlashLoanAdapter(address(underlying));
+        ModularSwapper1Pct altSwapper = new ModularSwapper1Pct(address(debtToken), address(underlying));
 
         // Approve them
         vm.startPrank(owner);
@@ -679,7 +579,7 @@ contract V3LeveragerModularTest is Test {
 
         // Use original adapters
         vm.startPrank(alice);
-        yieldToken.approve(address(leverager), 20 ether);
+        IERC20(address(mytVault)).approve(address(leverager), 20 ether);
 
         ILeveragerV3.LeverageParams memory params1 = ILeveragerV3.LeverageParams({
             vault: address(vault),
@@ -712,14 +612,14 @@ contract V3LeveragerModularTest is Test {
         // Both operations should have succeeded
         (uint256 collateral, uint256 debt,) = alchemist.getCDP(vault.getVaultPositionId());
         assertEq(collateral, 30 ether); // 15 + 15
-        assertEq(debt, 24 ether); // 12 + 12
+        assertEq(debt, 24 ether);       // 12 + 12
     }
 
     // ============ Events Tests ============
 
     function test_EmitsLeverageExecutedEvent() public {
         vm.startPrank(alice);
-        yieldToken.approve(address(leverager), 10 ether);
+        IERC20(address(mytVault)).approve(address(leverager), 10 ether);
 
         ILeveragerV3.LeverageParams memory params = ILeveragerV3.LeverageParams({
             vault: address(vault),
@@ -748,7 +648,7 @@ contract V3LeveragerModularTest is Test {
     }
 
     function test_EmitsConverterApprovalEvent() public {
-        MockTokenConverter newConverter = new MockTokenConverter(address(underlyingToken), address(yieldToken));
+        MYTConverter newConverter = new MYTConverter(address(mytVault), address(underlying));
 
         vm.expectEmit(true, false, false, true);
         emit ILeveragerV3.ConverterApprovalSet(address(newConverter), true);

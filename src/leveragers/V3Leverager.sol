@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-pragma solidity 0.8.26;
+pragma solidity 0.8.28;
 
 import "../interfaces/ILeveragerV3.sol";
 import "../interfaces/ITokenConverter.sol";
@@ -21,7 +21,8 @@ import "lib/openzeppelin-contracts/contracts/utils/ReentrancyGuard.sol";
 
 /// @title V3Leverager
 /// @notice Generic leverager that works with any AlchemistV3 vault
-/// @dev Uses registry pattern to approve adapters, shared across all vaults
+/// @dev Uses registry pattern to approve adapters, shared across all vaults.
+///      Deleverage uses AlchemistV3.repay() with yield tokens — fully deterministic, no DEX swap.
 contract V3Leverager is ILeveragerV3, IFlashLoanCallback, Ownable, ReentrancyGuard {
     using SafeERC20 for IERC20;
 
@@ -29,9 +30,9 @@ contract V3Leverager is ILeveragerV3, IFlashLoanCallback, Ownable, ReentrancyGua
 
     /// @notice State machine for flash loan operations
     enum FlashLoanState {
-        Idle,       // No flash loan in progress
-        Leverage,   // Leverage operation in progress
-        Deleverage  // Deleverage operation in progress
+        Idle,            // No flash loan in progress
+        Leverage,        // Leverage operation in progress
+        DeleverageRepay  // Repay-based deleverage in progress
     }
 
     // ============ Registries ============
@@ -40,8 +41,12 @@ contract V3Leverager is ILeveragerV3, IFlashLoanCallback, Ownable, ReentrancyGua
     mapping(address => bool) private _approvedFlashLoanAdapters;
     mapping(address => bool) private _approvedSwappers;
 
-    // ============ Flash Loan Context ============
+    // ============ Flash Loan Context (transient storage via EIP-1153) ============
 
+    /// @dev FlashLoanContext is kept as a memory struct for internal function signatures,
+    ///      but backed by transient storage (tstore/tload) instead of regular storage.
+    ///      Transient storage is automatically cleared after each transaction, eliminating
+    ///      stale-state risks and saving ~20k gas per operation (no SSTORE cold writes).
     struct FlashLoanContext {
         address vault;
         address converter;
@@ -52,13 +57,26 @@ contract V3Leverager is ILeveragerV3, IFlashLoanCallback, Ownable, ReentrancyGua
         uint256 mintAmount;
         uint256 minSwapOutput;
         uint256 minYieldOut;
-        // Deleverage specific
+        // Deleverage repay specific
         uint256 withdrawAmount;
-        uint256 burnAmount;
+        uint256 repayAmount;
     }
 
-    FlashLoanContext private _context;
-    FlashLoanState private _state;
+    // Transient storage slot offsets (base = keccak256("V3Leverager.transient") truncated)
+    // Each field occupies one 32-byte slot at base + offset.
+    uint256 private constant T_BASE     = uint256(keccak256("V3Leverager.transient"));
+    uint256 private constant T_STATE           = T_BASE + 0;
+    uint256 private constant T_VAULT           = T_BASE + 1;
+    uint256 private constant T_CONVERTER       = T_BASE + 2;
+    uint256 private constant T_SWAPPER         = T_BASE + 3;
+    uint256 private constant T_FLASH_ADAPTER   = T_BASE + 4;
+    uint256 private constant T_USER            = T_BASE + 5;
+    uint256 private constant T_DEPOSIT_AMOUNT  = T_BASE + 6;
+    uint256 private constant T_MINT_AMOUNT     = T_BASE + 7;
+    uint256 private constant T_MIN_SWAP_OUTPUT = T_BASE + 8;
+    uint256 private constant T_MIN_YIELD_OUT   = T_BASE + 9;
+    uint256 private constant T_WITHDRAW_AMOUNT = T_BASE + 10;
+    uint256 private constant T_REPAY_AMOUNT    = T_BASE + 11;
 
     // ============ Errors ============
 
@@ -73,6 +91,49 @@ contract V3Leverager is ILeveragerV3, IFlashLoanCallback, Ownable, ReentrancyGua
     error UnsupportedFlashLoanToken();
     error InvalidConverterTokens();
     error FlashLoanRequired();
+    error UnauthorizedCaller();
+
+    // ============ Transient Storage Helpers ============
+
+    /// @dev Write a uint256 value to a transient storage slot.
+    function _tstore(uint256 slot, uint256 value) internal {
+        assembly { tstore(slot, value) }
+    }
+
+    /// @dev Read a uint256 value from a transient storage slot.
+    function _tload(uint256 slot) internal view returns (uint256 value) {
+        assembly { value := tload(slot) }
+    }
+
+    /// @dev Write all FlashLoanContext fields to transient storage.
+    function _storeContext(FlashLoanContext memory ctx) internal {
+        _tstore(T_VAULT, uint256(uint160(ctx.vault)));
+        _tstore(T_CONVERTER, uint256(uint160(ctx.converter)));
+        _tstore(T_SWAPPER, uint256(uint160(ctx.swapper)));
+        _tstore(T_FLASH_ADAPTER, uint256(uint160(ctx.flashLoanAdapter)));
+        _tstore(T_USER, uint256(uint160(ctx.user)));
+        _tstore(T_DEPOSIT_AMOUNT, ctx.depositAmount);
+        _tstore(T_MINT_AMOUNT, ctx.mintAmount);
+        _tstore(T_MIN_SWAP_OUTPUT, ctx.minSwapOutput);
+        _tstore(T_MIN_YIELD_OUT, ctx.minYieldOut);
+        _tstore(T_WITHDRAW_AMOUNT, ctx.withdrawAmount);
+        _tstore(T_REPAY_AMOUNT, ctx.repayAmount);
+    }
+
+    /// @dev Read all FlashLoanContext fields from transient storage into memory.
+    function _loadContext() internal view returns (FlashLoanContext memory ctx) {
+        ctx.vault = address(uint160(_tload(T_VAULT)));
+        ctx.converter = address(uint160(_tload(T_CONVERTER)));
+        ctx.swapper = address(uint160(_tload(T_SWAPPER)));
+        ctx.flashLoanAdapter = address(uint160(_tload(T_FLASH_ADAPTER)));
+        ctx.user = address(uint160(_tload(T_USER)));
+        ctx.depositAmount = _tload(T_DEPOSIT_AMOUNT);
+        ctx.mintAmount = _tload(T_MINT_AMOUNT);
+        ctx.minSwapOutput = _tload(T_MIN_SWAP_OUTPUT);
+        ctx.minYieldOut = _tload(T_MIN_YIELD_OUT);
+        ctx.withdrawAmount = _tload(T_WITHDRAW_AMOUNT);
+        ctx.repayAmount = _tload(T_REPAY_AMOUNT);
+    }
 
     // ============ Constructor ============
 
@@ -86,8 +147,8 @@ contract V3Leverager is ILeveragerV3, IFlashLoanCallback, Ownable, ReentrancyGua
     ///      and returns surplus to the caller.
     /// @param params Struct containing vault, adapter addresses, amounts, and slippage limits.
     function leverage(LeverageParams calldata params) external nonReentrant {
-        // Validate state
-        if (_state != FlashLoanState.Idle) revert FlashLoanInProgress();
+        // Validate state (transient storage is 0/Idle at start of every tx)
+        if (FlashLoanState(_tload(T_STATE)) != FlashLoanState.Idle) revert FlashLoanInProgress();
 
         // Validate approved adapters
         if (!_approvedConverters[params.converter]) revert UnapprovedConverter();
@@ -105,8 +166,8 @@ contract V3Leverager is ILeveragerV3, IFlashLoanCallback, Ownable, ReentrancyGua
             IERC20(yieldToken).safeTransferFrom(msg.sender, address(this), params.depositAmount);
         }
 
-        // Store context for callback
-        _context = FlashLoanContext({
+        // Store context for callback (transient storage)
+        _storeContext(FlashLoanContext({
             vault: params.vault,
             converter: params.converter,
             swapper: params.swapper,
@@ -117,11 +178,11 @@ contract V3Leverager is ILeveragerV3, IFlashLoanCallback, Ownable, ReentrancyGua
             minSwapOutput: params.minSwapOutput,
             minYieldOut: params.minYieldOut,
             withdrawAmount: 0,
-            burnAmount: 0
-        });
+            repayAmount: 0
+        }));
 
-        // Set state before flash loan
-        _state = FlashLoanState.Leverage;
+        // Set state before flash loan (transient)
+        _tstore(T_STATE, uint256(FlashLoanState.Leverage));
 
         if (params.flashLoanAmount > 0) {
             if (!IFlashLoanAdapter(params.flashLoanAdapter).isTokenSupported(underlyingToken)) {
@@ -139,27 +200,28 @@ contract V3Leverager is ILeveragerV3, IFlashLoanCallback, Ownable, ReentrancyGua
             _executeLeverageLogic(underlyingToken, 0, 0);
         }
 
-        // Reset state after completion
-        _state = FlashLoanState.Idle;
-        delete _context;
+        // Reset state after completion (transient storage auto-clears at tx end,
+        // but reset explicitly for same-tx safety, e.g. multi-call scenarios)
+        _tstore(T_STATE, uint256(FlashLoanState.Idle));
     }
 
-    // ============ Deleverage ============
+    // ============ Deleverage (Repay-based) ============
 
-    /// @notice Execute a deleverage operation: flash-loan underlying, swap to debt, burn debt,
-    ///         withdraw collateral, convert to underlying, repay flash loan, send surplus underlying
-    ///         and any excess debt tokens to recipient.
-    /// @param params Struct containing vault, adapter addresses, amounts, and slippage limits.
-    function deleverage(DeleverageParams calldata params) external nonReentrant {
-        // Validate state
-        if (_state != FlashLoanState.Idle) revert FlashLoanInProgress();
+    /// @notice Execute a repay-based deleverage: flash-loan underlying, convert to MYT, repay debt
+    ///         with MYT, withdraw freed collateral, convert to underlying, repay flash loan.
+    /// @dev No DEX swap needed — entire path is deterministic through VaultV2 deposit/redeem.
+    ///      Cannot be called in the same block as leverage() due to CannotRepayOnMintBlock.
+    /// @param params Struct containing vault, converter, flash loan adapter, and amounts.
+    function deleverageRepay(DeleverageRepayParams calldata params) external nonReentrant {
+        // Validate state (transient storage is 0/Idle at start of every tx)
+        if (FlashLoanState(_tload(T_STATE)) != FlashLoanState.Idle) revert FlashLoanInProgress();
+        if (msg.sender != params.vault) revert UnauthorizedCaller();
 
         // Validate approved adapters
         if (!_approvedConverters[params.converter]) revert UnapprovedConverter();
         if (!_approvedFlashLoanAdapters[params.flashLoanAdapter]) revert UnapprovedFlashLoanAdapter();
-        if (!_approvedSwappers[params.swapper]) revert UnapprovedSwapper();
 
-        // Deleverage always requires a flash loan (to swap to debt tokens for burning)
+        // Deleverage always requires a flash loan
         if (params.flashLoanAmount == 0) revert FlashLoanRequired();
 
         ITokenConverter converter = ITokenConverter(params.converter);
@@ -170,11 +232,11 @@ contract V3Leverager is ILeveragerV3, IFlashLoanCallback, Ownable, ReentrancyGua
             revert UnsupportedFlashLoanToken();
         }
 
-        // Store context for callback
-        _context = FlashLoanContext({
+        // Store context for callback (transient storage)
+        _storeContext(FlashLoanContext({
             vault: params.vault,
             converter: params.converter,
-            swapper: params.swapper,
+            swapper: address(0),           // Not needed for repay path
             flashLoanAdapter: params.flashLoanAdapter,
             user: params.recipient,
             depositAmount: 0,
@@ -182,11 +244,11 @@ contract V3Leverager is ILeveragerV3, IFlashLoanCallback, Ownable, ReentrancyGua
             minSwapOutput: params.minOutput,
             minYieldOut: 0,
             withdrawAmount: params.withdrawAmount,
-            burnAmount: params.burnAmount
-        });
+            repayAmount: params.repayAmount
+        }));
 
-        // Set state before flash loan
-        _state = FlashLoanState.Deleverage;
+        // Set state before flash loan (transient)
+        _tstore(T_STATE, uint256(FlashLoanState.DeleverageRepay));
 
         // Execute flash loan
         IFlashLoanAdapter(params.flashLoanAdapter).flashLoan(
@@ -196,9 +258,9 @@ contract V3Leverager is ILeveragerV3, IFlashLoanCallback, Ownable, ReentrancyGua
             ""
         );
 
-        // Reset state after completion
-        _state = FlashLoanState.Idle;
-        delete _context;
+        // Reset state after completion (transient storage auto-clears at tx end,
+        // but reset explicitly for same-tx safety)
+        _tstore(T_STATE, uint256(FlashLoanState.Idle));
     }
 
     // ============ Flash Loan Callback ============
@@ -218,16 +280,17 @@ contract V3Leverager is ILeveragerV3, IFlashLoanCallback, Ownable, ReentrancyGua
         bytes calldata
     ) external returns (bool) {
         // Validate callback - must be in an active flash loan state
-        if (_state == FlashLoanState.Idle) revert NotInFlashLoan();
+        FlashLoanState state = FlashLoanState(_tload(T_STATE));
+        if (state == FlashLoanState.Idle) revert NotInFlashLoan();
         if (initiator != address(this)) revert InvalidCallback();
-        if (msg.sender != _context.flashLoanAdapter) revert InvalidCallback();
 
-        FlashLoanContext memory ctx = _context;
+        FlashLoanContext memory ctx = _loadContext();
+        if (msg.sender != ctx.flashLoanAdapter) revert InvalidCallback();
 
-        if (_state == FlashLoanState.Leverage) {
+        if (state == FlashLoanState.Leverage) {
             return _handleLeverageCallback(ctx, token, amount, fee);
         } else {
-            return _handleDeleverageCallback(ctx, token, amount, fee);
+            return _handleDeleverageRepayCallback(ctx, token, amount, fee);
         }
     }
 
@@ -248,7 +311,7 @@ contract V3Leverager is ILeveragerV3, IFlashLoanCallback, Ownable, ReentrancyGua
         uint256 flashLoanAmount,
         uint256 flashLoanFee
     ) internal {
-        FlashLoanContext memory ctx = _context;
+        FlashLoanContext memory ctx = _loadContext();
         ITokenConverter converter = ITokenConverter(ctx.converter);
         ILeveragedVaultCallback vault = ILeveragedVaultCallback(ctx.vault);
         address yieldToken = converter.yieldToken();
@@ -311,8 +374,9 @@ contract V3Leverager is ILeveragerV3, IFlashLoanCallback, Ownable, ReentrancyGua
         );
     }
 
-    /// @dev Handles the flash loan callback during a deleverage operation.
-    function _handleDeleverageCallback(
+    /// @dev Handles the flash loan callback during a repay-based deleverage operation.
+    ///      Flow: convert underlying→MYT → repay debt → withdraw freed collateral → convert MYT→underlying
+    function _handleDeleverageRepayCallback(
         FlashLoanContext memory ctx,
         address underlyingToken,
         uint256 flashLoanAmount,
@@ -321,57 +385,43 @@ contract V3Leverager is ILeveragerV3, IFlashLoanCallback, Ownable, ReentrancyGua
         ITokenConverter converter = ITokenConverter(ctx.converter);
         ILeveragedVaultCallback vault = ILeveragedVaultCallback(ctx.vault);
         address yieldToken = converter.yieldToken();
-        address debtToken = _getDebtToken(ctx.vault);
 
-        // 1. Swap underlying → debt tokens
-        IERC20(underlyingToken).forceApprove(ctx.swapper, flashLoanAmount);
-        uint256 debtReceived = ISwapper(ctx.swapper).swapUnderlyingToDebt(
-            flashLoanAmount,
-            ctx.burnAmount,
-            address(this),
-            ""
-        );
-        if (debtReceived < ctx.burnAmount) revert SlippageExceeded();
+        // 1. Convert flash-loaned underlying → MYT (deterministic via VaultV2)
+        IERC20(underlyingToken).forceApprove(address(converter), flashLoanAmount);
+        uint256 mytReceived = converter.toYield(flashLoanAmount, address(this), ctx.repayAmount);
 
-        // 2. Burn only the required debt tokens; return surplus to user
-        IERC20(debtToken).forceApprove(ctx.vault, ctx.burnAmount);
-        vault.vaultBurnDebtTokens(ctx.burnAmount);
-        uint256 debtSurplus = debtReceived - ctx.burnAmount;
-        if (debtSurplus > 0) {
-            IERC20(debtToken).safeTransfer(ctx.user, debtSurplus);
-        }
+        // 2. Repay debt with MYT
+        IERC20(yieldToken).forceApprove(ctx.vault, ctx.repayAmount);
+        vault.vaultRepayWithYieldTokens(ctx.repayAmount);
 
-        // 3. Withdraw yield tokens (use actual withdrawn amount)
-        uint256 yieldWithdrawn = vault.vaultWithdrawYieldTokens(ctx.withdrawAmount, address(this));
+        // 3. Withdraw freed collateral (MYT)
+        uint256 mytWithdrawn = vault.vaultWithdrawYieldTokens(ctx.withdrawAmount, address(this));
 
-        // 4. Convert yield → underlying
-        IERC20(yieldToken).forceApprove(address(converter), yieldWithdrawn);
-        uint256 underlyingReceived = converter.toUnderlying(
-            yieldWithdrawn,
-            address(this),
-            ctx.minSwapOutput
-        );
-
-        // Validate slippage protection
-        if (underlyingReceived < ctx.minSwapOutput) revert SlippageExceeded();
+        // 4. Combine any leftover MYT from conversion + withdrawn collateral → convert all to underlying
+        uint256 mytSurplus = mytReceived > ctx.repayAmount ? mytReceived - ctx.repayAmount : 0;
+        uint256 totalMyt = mytWithdrawn + mytSurplus;
+        IERC20(yieldToken).forceApprove(address(converter), totalMyt);
+        uint256 underlyingReceived = converter.toUnderlying(totalMyt, address(this), 0);
 
         // 5. Repay flash loan
-        uint256 repayAmount = flashLoanAmount + flashLoanFee;
-        if (underlyingReceived < repayAmount) revert InsufficientOutput();
-
-        IERC20(underlyingToken).safeTransfer(ctx.flashLoanAdapter, repayAmount);
+        uint256 flashRepayAmount = flashLoanAmount + flashLoanFee;
+        if (underlyingReceived < flashRepayAmount) revert InsufficientOutput();
+        IERC20(underlyingToken).safeTransfer(ctx.flashLoanAdapter, flashRepayAmount);
 
         // 6. Return surplus to user
-        uint256 surplus = underlyingReceived - repayAmount;
+        uint256 surplus = underlyingReceived - flashRepayAmount;
         if (surplus > 0) {
             IERC20(underlyingToken).safeTransfer(ctx.user, surplus);
         }
 
-        emit DeleverageExecuted(
+        // 7. Validate minimum output
+        if (ctx.minSwapOutput > 0 && surplus < ctx.minSwapOutput) revert SlippageExceeded();
+
+        emit DeleverageRepayExecuted(
             ctx.vault,
             ctx.user,
-            yieldWithdrawn,
-            debtReceived,
+            ctx.repayAmount,
+            ctx.withdrawAmount,
             surplus
         );
 

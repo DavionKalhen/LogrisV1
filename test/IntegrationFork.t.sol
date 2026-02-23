@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: MIT
-pragma solidity 0.8.26;
+pragma solidity 0.8.28;
 
 import "forge-std/Test.sol";
 import "../src/adapters/flashloan/BalancerFlashLoanAdapter.sol";
@@ -160,6 +160,8 @@ contract MockAlchemistV3ForIntegration {
     function totalDebt() external view returns (uint256) {
         return MockDebtToken(debtToken).totalSupply();
     }
+
+    function poke(uint256) external {}
 }
 
 contract MockPositionNFT {
@@ -576,10 +578,11 @@ contract SimpleLeveragedVault is ILeveragedVaultCallback {
         return alchemist.withdraw(amount, recipient, vaultPositionId);
     }
 
-    function vaultBurnDebtTokens(uint256 amount) external onlyLeverager {
+    function vaultRepayWithYieldTokens(uint256 amount) external onlyLeverager returns (uint256) {
         require(vaultPositionId > 0, "No position");
-        IERC20(alchemist.debtToken()).approve(address(alchemist), amount);
-        alchemist.burn(amount, vaultPositionId);
+        IERC20(alchemist.yieldToken()).safeTransferFrom(msg.sender, address(this), amount);
+        IERC20(alchemist.yieldToken()).approve(address(alchemist), amount);
+        return alchemist.repay(amount, vaultPositionId);
     }
 
     function getVaultPositionId() external view returns (uint256) {

@@ -1,210 +1,98 @@
 // SPDX-License-Identifier: MIT
-pragma solidity 0.8.26;
+pragma solidity 0.8.28;
 
-import "forge-std/Test.sol";
-import "lib/openzeppelin-contracts/contracts/token/ERC20/ERC20.sol";
-import "lib/openzeppelin-contracts/contracts/proxy/Clones.sol";
-import "../src/LeveragedVault.sol";
+import "./LogrisTestBase.t.sol";
+import {IAlchemistV3Position} from "../alchemix-v3/src/interfaces/IAlchemistV3Position.sol";
 
-contract MockERC20Token is ERC20 {
-    constructor(string memory name_, string memory symbol_) ERC20(name_, symbol_) {}
-
-    function mint(address to, uint256 amount) external {
-        _mint(to, amount);
-    }
-}
-
-contract MockPositionNFT {
-    address public alchemist;
-    uint256 private _currentTokenId;
-
-    mapping(uint256 => address) private _owners;
-    mapping(address => uint256) private _balances;
-    mapping(address => uint256[]) private _ownedTokens;
-    mapping(uint256 => uint256) private _ownedTokensIndex;
-
-    constructor(address alchemist_) {
-        alchemist = alchemist_;
-    }
-
-    function mint(address to) external returns (uint256) {
-        require(msg.sender == alchemist, "Only alchemist");
-        _currentTokenId++;
-        uint256 tokenId = _currentTokenId;
-        _owners[tokenId] = to;
-        _ownedTokensIndex[tokenId] = _ownedTokens[to].length;
-        _ownedTokens[to].push(tokenId);
-        _balances[to] += 1;
-        return tokenId;
-    }
-
-    function ownerOf(uint256 tokenId) external view returns (address) {
-        address owner = _owners[tokenId];
-        require(owner != address(0), "Invalid token");
-        return owner;
-    }
-
-    function balanceOf(address owner) external view returns (uint256) {
-        return _balances[owner];
-    }
-
-    function tokenOfOwnerByIndex(address owner, uint256 index) external view returns (uint256) {
-        require(index < _ownedTokens[owner].length, "Index out of bounds");
-        return _ownedTokens[owner][index];
-    }
-
-    function transferFrom(address from, address to, uint256 tokenId) external {
-        require(msg.sender == from, "Not authorized");
-        require(_owners[tokenId] == from, "Not owner");
-
-        _owners[tokenId] = to;
-
-        uint256 fromIndex = _ownedTokensIndex[tokenId];
-        uint256 lastIndex = _ownedTokens[from].length - 1;
-        if (fromIndex != lastIndex) {
-            uint256 lastTokenId = _ownedTokens[from][lastIndex];
-            _ownedTokens[from][fromIndex] = lastTokenId;
-            _ownedTokensIndex[lastTokenId] = fromIndex;
-        }
-        _ownedTokens[from].pop();
-        _balances[from] -= 1;
-
-        _ownedTokensIndex[tokenId] = _ownedTokens[to].length;
-        _ownedTokens[to].push(tokenId);
-        _balances[to] += 1;
-    }
-}
-
-contract MockAlchemistV3 {
-    address public yieldToken;
-    address public debtToken;
-    MockPositionNFT public positionNFT;
-
-    uint256 public depositCap = type(uint256).max;
-    uint256 public totalDeposited;
-
-    constructor(address _yieldToken, address _debtToken) {
-        yieldToken = _yieldToken;
-        debtToken = _debtToken;
-        positionNFT = new MockPositionNFT(address(this));
-    }
-
-    function alchemistPositionNFT() external view returns (address) {
-        return address(positionNFT);
-    }
-
-    function depositsPaused() external pure returns (bool) {
-        return false;
-    }
-
-    function loansPaused() external pure returns (bool) {
-        return false;
-    }
-
-    function getTotalDeposited() external view returns (uint256) {
-        return totalDeposited;
-    }
-
-    function minimumCollateralization() external pure returns (uint256) {
-        return 1e18;
-    }
-
-    function getMaxBorrowable(uint256) external pure returns (uint256) {
-        return type(uint256).max;
-    }
-
-    function getCDP(uint256) external view returns (uint256 collateral, uint256 debt, uint256 earmarked) {
-        return (totalDeposited, 0, 0);
-    }
-
-    function normalizeDebtTokensToUnderlying(uint256 amount) external pure returns (uint256) {
-        return amount;
-    }
-    function normalizeUnderlyingTokensToDebt(uint256 amount) external pure returns (uint256) {
-        return amount;
-    }
-
-    function convertYieldTokensToUnderlying(uint256 amount) external pure returns (uint256) {
-        return amount;
-    }
-
-    function convertUnderlyingTokensToYield(uint256 amount) external pure returns (uint256) {
-        return amount;
-    }
-
-    function deposit(uint256 amount, address recipient, uint256 recipientId) external returns (uint256) {
-        if (recipientId == 0) {
-            positionNFT.mint(recipient);
-        }
-        totalDeposited += amount;
-        ERC20(yieldToken).transferFrom(msg.sender, address(this), amount);
-        return 0;
-    }
-
-    function mintPosition(address to) external returns (uint256) {
-        return positionNFT.mint(to);
-    }
-}
-
-contract VaultPositionInvariantTest is Test {
-    MockERC20Token private underlying;
-    MockERC20Token private yieldToken;
-    MockERC20Token private debtToken;
-    MockAlchemistV3 private alchemist;
-    LeveragedVault private vault;
+/// @title VaultPositionInvariantTest
+/// @notice Tests for position NFT invariants (PositionAlreadyExists, sweepUnknownPosition)
+///         using the real AlchemistV3 stack.
+/// @dev Deploys a vault with leverager=address(this) so the test contract can call
+///      vaultDepositYieldTokens directly to exercise the position guards.
+contract VaultPositionInvariantTest is LocalAlchemistV3Base {
+    LeveragedVault private testVault;
 
     function setUp() public {
-        underlying = new MockERC20Token("Underlying", "UND");
-        yieldToken = new MockERC20Token("Yield", "YLD");
-        debtToken = new MockERC20Token("Debt", "DBT");
-        alchemist = new MockAlchemistV3(address(yieldToken), address(debtToken));
+        _deployLocalAlchemistV3();
 
-        LeveragedVault impl = new LeveragedVault();
-        vault = LeveragedVault(payable(Clones.clone(address(impl))));
-        vault.initialize(
-            address(yieldToken),
-            address(underlying),
-            address(alchemist),
-            address(this), // leverager
-            100,  // 1% underlying slippage
-            200,  // 2% debt slippage
-            address(0xCAFE),
-            address(0xF00D),
-            address(0xBEEF),
-            address(underlying),
-            address(this)
+        // Deploy a vault where the test contract is the leverager so we can call
+        // vaultDepositYieldTokens directly (it has onlyLeverager modifier).
+        testVault = _deployLeveragedVault(
+            address(this),       // leverager = test contract
+            address(0xCAFE),     // converter (unused in these tests)
+            address(0xF00D),     // flashLoanAdapter (unused)
+            address(0xBEEF),     // swapper (unused)
+            address(this)        // owner = test contract
         );
     }
 
-    function _mintYield(uint256 amount) internal {
-        yieldToken.mint(address(this), amount);
-        yieldToken.approve(address(vault), amount);
+    /// @dev Fund this test contract with MYT tokens and approve the vault.
+    function _mintMYT(uint256 underlyingAmount) internal returns (uint256 mytShares) {
+        mytShares = _fundWithMYT(address(this), underlyingAmount);
+        IERC20(address(mytVault)).approve(address(testVault), mytShares);
     }
 
+    /// @notice If the vault already holds a position NFT (e.g., from a rogue deposit),
+    ///         calling vaultDepositYieldTokens should revert with PositionAlreadyExists.
     function test_RevertIfPositionAlreadyExists() public {
-        _mintYield(10 ether);
+        // Fund this contract with MYT for the vaultDepositYieldTokens call
+        uint256 mytShares = _mintMYT(10 ether);
 
-        alchemist.mintPosition(address(vault));
+        // Create a rogue position for the vault by depositing MYT to alchemist
+        // with testVault as recipient. This mints a position NFT to testVault
+        // that the vault doesn't know about (vaultPositionId == 0).
+        uint256 rogueMYT = _fundWithMYT(address(this), 10 ether);
+        IERC20(address(mytVault)).approve(address(alchemist), rogueMYT);
+        vm.prank(address(this));
+        alchemist.deposit(rogueMYT, address(testVault), 0);
 
+        // Verify testVault now holds a position NFT but doesn't know about it
+        IAlchemistV3Position nft = IAlchemistV3Position(alchemist.alchemistPositionNFT());
+        assertGt(nft.balanceOf(address(testVault)), 0, "Vault should hold a rogue position NFT");
+        assertEq(testVault.vaultPositionId(), 0, "Vault should not know about the position");
+
+        // Now vaultDepositYieldTokens should revert because it detects
+        // positionNFT.balanceOf(vault) != 0 but vaultPositionId == 0
         vm.expectRevert(LeveragedVault.PositionAlreadyExists.selector);
-        vault.vaultDepositYieldTokens(10 ether);
+        testVault.vaultDepositYieldTokens(mytShares);
     }
 
+    /// @notice After creating a real position, if an extra position NFT is minted to the vault,
+    ///         the owner can sweep the unknown position but not the active one.
     function test_SweepUnknownPosition() public {
-        _mintYield(10 ether);
-        vault.vaultDepositYieldTokens(10 ether);
+        // 1. Create the vault's own position via vaultDepositYieldTokens
+        uint256 mytShares = _mintMYT(10 ether);
+        testVault.vaultDepositYieldTokens(mytShares);
 
-        uint256 activeId = vault.getVaultPositionId();
-        uint256 extraId = alchemist.mintPosition(address(vault));
-        MockPositionNFT nft = MockPositionNFT(alchemist.alchemistPositionNFT());
+        uint256 activeId = testVault.getVaultPositionId();
+        assertGt(activeId, 0, "Active position should exist");
 
-        assertEq(nft.balanceOf(address(vault)), 2);
+        // 2. Create an extra rogue position for the vault
+        uint256 rogueMYT = _fundWithMYT(address(this), 10 ether);
+        IERC20(address(mytVault)).approve(address(alchemist), rogueMYT);
+        alchemist.deposit(rogueMYT, address(testVault), 0);
 
+        IAlchemistV3Position nft = IAlchemistV3Position(alchemist.alchemistPositionNFT());
+        assertEq(nft.balanceOf(address(testVault)), 2, "Vault should hold 2 position NFTs");
+
+        // Find the extra position ID (it's not the active one)
+        uint256 extraId;
+        for (uint256 i = 0; i < nft.balanceOf(address(testVault)); i++) {
+            uint256 tokenId = nft.tokenOfOwnerByIndex(address(testVault), i);
+            if (tokenId != activeId) {
+                extraId = tokenId;
+                break;
+            }
+        }
+        assertGt(extraId, 0, "Should find an extra position ID");
+
+        // 3. Cannot sweep the active position
         vm.expectRevert(LeveragedVault.CannotSweepActivePosition.selector);
-        vault.sweepUnknownPosition(activeId, address(0xBEEF));
+        testVault.sweepUnknownPosition(activeId, address(0xBEEF));
 
-        vault.sweepUnknownPosition(extraId, address(0xBEEF));
-        assertEq(nft.ownerOf(extraId), address(0xBEEF));
-        assertEq(nft.balanceOf(address(vault)), 1);
+        // 4. Can sweep the unknown/extra position
+        testVault.sweepUnknownPosition(extraId, address(0xBEEF));
+        assertEq(nft.ownerOf(extraId), address(0xBEEF), "Extra position should be swept to recipient");
+        assertEq(nft.balanceOf(address(testVault)), 1, "Vault should have only 1 position NFT");
     }
 }
