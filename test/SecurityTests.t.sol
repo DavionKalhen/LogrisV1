@@ -233,6 +233,17 @@ contract SecurityTests is LocalAlchemistV3Base {
     address public alice = makeAddr("alice");
     address public attacker = makeAddr("attacker");
 
+    function _leverageFromVault(ILeveragerV3.LeverageParams memory params, address funder) internal {
+        if (params.depositAmount > 0) {
+            vm.prank(funder);
+            IERC20(address(mytVault)).transfer(params.vault, params.depositAmount);
+            vm.prank(params.vault);
+            IERC20(address(mytVault)).approve(address(leverager), params.depositAmount);
+        }
+        vm.prank(params.vault);
+        leverager.leverage(params);
+    }
+
     function setUp() public {
         // Deploy real AlchemistV3 stack
         _deployLocalAlchemistV3();
@@ -343,9 +354,6 @@ contract SecurityTests is LocalAlchemistV3Base {
         leverager.setSwapperApproval(address(badSwapper), true);
 
         // Try to leverage with minSwapOutput higher than what swapper will return
-        vm.startPrank(alice);
-        IERC20(address(mytVault)).approve(address(leverager), 10 ether);
-
         // With real AlchemistV3: deposit=10, flash=20, total collateral=30 MYT
         // Max debt at 111% collateralization = ~27 ether. Use mintAmount=25.
         ILeveragerV3.LeverageParams memory params = ILeveragerV3.LeverageParams({
@@ -360,15 +368,16 @@ contract SecurityTests is LocalAlchemistV3Base {
             minYieldOut: 0
         });
 
+        vm.prank(alice);
+        IERC20(address(mytVault)).transfer(address(vault), 10 ether);
+        vm.prank(address(vault));
+        IERC20(address(mytVault)).approve(address(leverager), 10 ether);
+        vm.prank(address(vault));
         vm.expectRevert(V3Leverager.SlippageExceeded.selector);
         leverager.leverage(params);
-        vm.stopPrank();
     }
 
     function test_LeverageSucceedsWhenSlippageMet() public {
-        vm.startPrank(alice);
-        IERC20(address(mytVault)).approve(address(leverager), 10 ether);
-
         // With real AlchemistV3: deposit=10, flash=20, total collateral=30 MYT
         // Max debt at 111% collateralization = ~27 ether. Use mintAmount=25.
         ILeveragerV3.LeverageParams memory params = ILeveragerV3.LeverageParams({
@@ -384,8 +393,7 @@ contract SecurityTests is LocalAlchemistV3Base {
         });
 
         // Should succeed
-        leverager.leverage(params);
-        vm.stopPrank();
+        _leverageFromVault(params, alice);
 
         // Verify position was created
         (uint256 collateral, uint256 debt,) = alchemist.getCDP(vault.getVaultPositionId());
@@ -394,9 +402,6 @@ contract SecurityTests is LocalAlchemistV3Base {
     }
 
     function test_RevertOnMinYieldOutNotMet() public {
-        vm.startPrank(alice);
-        IERC20(address(mytVault)).approve(address(leverager), 10 ether);
-
         ILeveragerV3.LeverageParams memory params = ILeveragerV3.LeverageParams({
             vault: address(vault),
             converter: address(converter),
@@ -409,17 +414,18 @@ contract SecurityTests is LocalAlchemistV3Base {
             minYieldOut: 40 ether // Impossible: only 10 deposit + 20 flash = 30 max
         });
 
+        vm.prank(alice);
+        IERC20(address(mytVault)).transfer(address(vault), 10 ether);
+        vm.prank(address(vault));
+        IERC20(address(mytVault)).approve(address(leverager), 10 ether);
         // MYTConverter reverts with InsufficientYieldOutput when minYieldOut not met
+        vm.prank(address(vault));
         vm.expectRevert(MYTConverter.InsufficientYieldOutput.selector);
         leverager.leverage(params);
-        vm.stopPrank();
     }
 
     function test_DeleveragePaysRecipient() public {
         // Leverage first
-        vm.startPrank(alice);
-        IERC20(address(mytVault)).approve(address(leverager), 10 ether);
-
         // deposit=10, flash=20, total collateral=30, mint=25 debt
         ILeveragerV3.LeverageParams memory leverageParams = ILeveragerV3.LeverageParams({
             vault: address(vault),
@@ -432,8 +438,7 @@ contract SecurityTests is LocalAlchemistV3Base {
             minSwapOutput: 1,
             minYieldOut: 0
         });
-        leverager.leverage(leverageParams);
-        vm.stopPrank();
+        _leverageFromVault(leverageParams, alice);
 
         // Advance block to avoid CannotRepayOnMintBlock
         vm.roll(block.number + 1);
@@ -467,9 +472,6 @@ contract SecurityTests is LocalAlchemistV3Base {
         // The actual reentrancy would require a malicious contract that calls back
         // during flash loan execution - the modifier should prevent this
 
-        vm.startPrank(alice);
-        IERC20(address(mytVault)).approve(address(leverager), 10 ether);
-
         ILeveragerV3.LeverageParams memory params = ILeveragerV3.LeverageParams({
             vault: address(vault),
             converter: address(converter),
@@ -483,8 +485,7 @@ contract SecurityTests is LocalAlchemistV3Base {
         });
 
         // First call should succeed
-        leverager.leverage(params);
-        vm.stopPrank();
+        _leverageFromVault(params, alice);
     }
 
     // ============ 5. Registry Security Tests ============
@@ -516,9 +517,6 @@ contract SecurityTests is LocalAlchemistV3Base {
     function test_UnapprovedAdaptersRejected() public {
         MYTConverter unapprovedConverter = new MYTConverter(address(mytVault), address(underlying));
 
-        vm.startPrank(alice);
-        IERC20(address(mytVault)).approve(address(leverager), 10 ether);
-
         ILeveragerV3.LeverageParams memory params = ILeveragerV3.LeverageParams({
             vault: address(vault),
             converter: address(unapprovedConverter), // Not approved
@@ -531,9 +529,9 @@ contract SecurityTests is LocalAlchemistV3Base {
             minYieldOut: 0
         });
 
+        vm.prank(address(vault));
         vm.expectRevert(V3Leverager.UnapprovedConverter.selector);
         leverager.leverage(params);
-        vm.stopPrank();
     }
 
     // ============ 6. Invalid Input Tests ============
@@ -554,8 +552,8 @@ contract SecurityTests is LocalAlchemistV3Base {
             minYieldOut: 0
         });
 
-        // Should revert when trying to interact with zero address vault
-        vm.expectRevert();
+        // Leverage is vault-routed; direct non-vault caller should be rejected.
+        vm.expectRevert(V3Leverager.UnauthorizedCaller.selector);
         leverager.leverage(params);
         vm.stopPrank();
     }

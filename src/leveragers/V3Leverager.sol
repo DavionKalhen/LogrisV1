@@ -149,6 +149,7 @@ contract V3Leverager is ILeveragerV3, IFlashLoanCallback, Ownable, ReentrancyGua
     function leverage(LeverageParams calldata params) external nonReentrant {
         // Validate state (transient storage is 0/Idle at start of every tx)
         if (FlashLoanState(_tload(T_STATE)) != FlashLoanState.Idle) revert FlashLoanInProgress();
+        if (msg.sender != params.vault) revert UnauthorizedCaller();
 
         // Validate approved adapters
         if (!_approvedConverters[params.converter]) revert UnapprovedConverter();

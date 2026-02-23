@@ -184,6 +184,17 @@ contract V3LeveragerModularTest is LocalAlchemistV3Base {
     address public alice = makeAddr("alice");
     address public bob = makeAddr("bob");
 
+    function _leverageFromVault(ILeveragerV3.LeverageParams memory params, address funder) internal {
+        if (params.depositAmount > 0) {
+            vm.prank(funder);
+            IERC20(address(mytVault)).transfer(params.vault, params.depositAmount);
+            vm.prank(params.vault);
+            IERC20(address(mytVault)).approve(address(leverager), params.depositAmount);
+        }
+        vm.prank(params.vault);
+        leverager.leverage(params);
+    }
+
     function setUp() public {
         _deployLocalAlchemistV3();
 
@@ -297,9 +308,6 @@ contract V3LeveragerModularTest is LocalAlchemistV3Base {
         uint256 flashLoanAmount = 20 ether;
         uint256 mintAmount = 25 ether;
 
-        vm.startPrank(alice);
-        IERC20(address(mytVault)).approve(address(leverager), depositAmount);
-
         ILeveragerV3.LeverageParams memory params = ILeveragerV3.LeverageParams({
             vault: address(vault),
             converter: address(converter),
@@ -312,8 +320,7 @@ contract V3LeveragerModularTest is LocalAlchemistV3Base {
             minYieldOut: 0
         });
 
-        leverager.leverage(params);
-        vm.stopPrank();
+        _leverageFromVault(params, alice);
 
         // Verify position state via real AlchemistV3
         (uint256 collateral, uint256 debt,) = alchemist.getCDP(vault.getVaultPositionId());
@@ -323,13 +330,32 @@ contract V3LeveragerModularTest is LocalAlchemistV3Base {
         assertEq(debt, mintAmount);
     }
 
-    function test_PermissionlessLeverage_DirectCallerCannotExtractSurplus() public {
+    function test_DirectCallerReverts_Unauthorized() public {
         uint256 depositAmount = 10 ether;
         uint256 flashLoanAmount = 20 ether;
         uint256 mintAmount = 25 ether;
 
-        vm.startPrank(alice);
-        IERC20(address(mytVault)).approve(address(leverager), depositAmount);
+        ILeveragerV3.LeverageParams memory params = ILeveragerV3.LeverageParams({
+            vault: address(vault),
+            converter: address(converter),
+            flashLoanAdapter: address(flashLoanAdapter),
+            swapper: address(swapper),
+            depositAmount: depositAmount,
+            flashLoanAmount: flashLoanAmount,
+            mintAmount: mintAmount,
+            minSwapOutput: 1,
+            minYieldOut: 0
+        });
+
+        vm.prank(alice);
+        vm.expectRevert(V3Leverager.UnauthorizedCaller.selector);
+        leverager.leverage(params);
+    }
+
+    function test_VaultRoutedLeverage_SurplusAccruesToVault() public {
+        uint256 depositAmount = 10 ether;
+        uint256 flashLoanAmount = 20 ether;
+        uint256 mintAmount = 25 ether;
 
         uint256 aliceUnderlyingBefore = IERC20(address(underlying)).balanceOf(alice);
         uint256 vaultUnderlyingBefore = IERC20(address(underlying)).balanceOf(address(vault));
@@ -346,9 +372,7 @@ contract V3LeveragerModularTest is LocalAlchemistV3Base {
             minYieldOut: 0
         });
 
-        // Permissionless call by EOA is allowed, but surplus must accrue to the vault.
-        leverager.leverage(params);
-        vm.stopPrank();
+        _leverageFromVault(params, alice);
 
         uint256 aliceUnderlyingAfter = IERC20(address(underlying)).balanceOf(alice);
         uint256 vaultUnderlyingAfter = IERC20(address(underlying)).balanceOf(address(vault));
@@ -358,45 +382,8 @@ contract V3LeveragerModularTest is LocalAlchemistV3Base {
         assertEq(vaultUnderlyingAfter - vaultUnderlyingBefore, 4.75 ether, "Surplus should remain in vault");
     }
 
-    function test_PermissionlessLeverage_NoFlashLoan_DirectCallerCannotExtractSurplus() public {
-        uint256 depositAmount = 10 ether;
-        uint256 mintAmount = 8 ether;
-
-        vm.startPrank(alice);
-        IERC20(address(mytVault)).approve(address(leverager), depositAmount);
-
-        uint256 aliceUnderlyingBefore = IERC20(address(underlying)).balanceOf(alice);
-        uint256 vaultUnderlyingBefore = IERC20(address(underlying)).balanceOf(address(vault));
-
-        ILeveragerV3.LeverageParams memory params = ILeveragerV3.LeverageParams({
-            vault: address(vault),
-            converter: address(converter),
-            flashLoanAdapter: address(flashLoanAdapter),
-            swapper: address(swapper),
-            depositAmount: depositAmount,
-            flashLoanAmount: 0,
-            mintAmount: mintAmount,
-            minSwapOutput: 1,
-            minYieldOut: 0
-        });
-
-        // Permissionless call by EOA is allowed, but surplus must accrue to the vault.
-        leverager.leverage(params);
-        vm.stopPrank();
-
-        uint256 aliceUnderlyingAfter = IERC20(address(underlying)).balanceOf(alice);
-        uint256 vaultUnderlyingAfter = IERC20(address(underlying)).balanceOf(address(vault));
-
-        // No flash repayment on this path, so all swap output (99% of mint) stays in the vault.
-        assertEq(aliceUnderlyingAfter - aliceUnderlyingBefore, 0, "EOA caller should not receive leverage surplus");
-        assertEq(vaultUnderlyingAfter - vaultUnderlyingBefore, 7.92 ether, "Surplus should remain in vault");
-    }
-
     function test_LeverageRevertsWithUnapprovedConverter() public {
         MYTConverter unapprovedConverter = new MYTConverter(address(mytVault), address(underlying));
-
-        vm.startPrank(alice);
-        IERC20(address(mytVault)).approve(address(leverager), 10 ether);
 
         ILeveragerV3.LeverageParams memory params = ILeveragerV3.LeverageParams({
             vault: address(vault),
@@ -410,16 +397,13 @@ contract V3LeveragerModularTest is LocalAlchemistV3Base {
             minYieldOut: 0
         });
 
+        vm.prank(address(vault));
         vm.expectRevert(V3Leverager.UnapprovedConverter.selector);
         leverager.leverage(params);
-        vm.stopPrank();
     }
 
     function test_LeverageRevertsWithUnapprovedFlashLoanAdapter() public {
         ModularFlashLoanAdapter unapprovedAdapter = new ModularFlashLoanAdapter(address(underlying));
-
-        vm.startPrank(alice);
-        IERC20(address(mytVault)).approve(address(leverager), 10 ether);
 
         ILeveragerV3.LeverageParams memory params = ILeveragerV3.LeverageParams({
             vault: address(vault),
@@ -433,16 +417,13 @@ contract V3LeveragerModularTest is LocalAlchemistV3Base {
             minYieldOut: 0
         });
 
+        vm.prank(address(vault));
         vm.expectRevert(V3Leverager.UnapprovedFlashLoanAdapter.selector);
         leverager.leverage(params);
-        vm.stopPrank();
     }
 
     function test_LeverageRevertsWithUnapprovedSwapper() public {
         ModularSwapper1Pct unapprovedSwapper = new ModularSwapper1Pct(address(debtToken), address(underlying));
-
-        vm.startPrank(alice);
-        IERC20(address(mytVault)).approve(address(leverager), 10 ether);
 
         ILeveragerV3.LeverageParams memory params = ILeveragerV3.LeverageParams({
             vault: address(vault),
@@ -456,9 +437,9 @@ contract V3LeveragerModularTest is LocalAlchemistV3Base {
             minYieldOut: 0
         });
 
+        vm.prank(address(vault));
         vm.expectRevert(V3Leverager.UnapprovedSwapper.selector);
         leverager.leverage(params);
-        vm.stopPrank();
     }
 
     function test_LeverageWithZeroDeposit() public {
@@ -468,9 +449,6 @@ contract V3LeveragerModularTest is LocalAlchemistV3Base {
         // collateral so the combined position supports the required mint.
         //
         // 1. Seed: deposit 30 MYT directly into vault's alchemist position (via normal leverage)
-        vm.startPrank(alice);
-        IERC20(address(mytVault)).approve(address(leverager), 30 ether);
-
         ILeveragerV3.LeverageParams memory seedParams = ILeveragerV3.LeverageParams({
             vault: address(vault),
             converter: address(converter),
@@ -482,7 +460,7 @@ contract V3LeveragerModularTest is LocalAlchemistV3Base {
             minSwapOutput: 0,
             minYieldOut: 0
         });
-        leverager.leverage(seedParams);
+        _leverageFromVault(seedParams, alice);
 
         // Now do a zero-deposit leverage with flash loan against the existing position.
         // Existing collateral = 30, existing debt = 1.
@@ -500,8 +478,7 @@ contract V3LeveragerModularTest is LocalAlchemistV3Base {
             minYieldOut: 0
         });
 
-        leverager.leverage(params);
-        vm.stopPrank();
+        _leverageFromVault(params, alice);
 
         (uint256 collateral, uint256 debt,) = alchemist.getCDP(vault.getVaultPositionId());
         assertEq(collateral, 50 ether); // 30 seed + 20 flash
@@ -513,9 +490,6 @@ contract V3LeveragerModularTest is LocalAlchemistV3Base {
 
     function test_DeleverageWithApprovedAdapters() public {
         // First leverage to create a position
-        vm.startPrank(alice);
-        IERC20(address(mytVault)).approve(address(leverager), 10 ether);
-
         ILeveragerV3.LeverageParams memory leverageParams = ILeveragerV3.LeverageParams({
             vault: address(vault),
             converter: address(converter),
@@ -527,11 +501,10 @@ contract V3LeveragerModularTest is LocalAlchemistV3Base {
             minSwapOutput: 1,
             minYieldOut: 0
         });
-        leverager.leverage(leverageParams);
+        _leverageFromVault(leverageParams, alice);
 
         // Must advance block to avoid CannotRepayOnMintBlock
         vm.roll(block.number + 1);
-        vm.stopPrank();
 
         // Now deleverage: flash 12 underlying -> convert to ~12 MYT -> repay 12 MYT ->
         // withdraw 15 MYT -> convert 15 MYT -> ~15 underlying ->
@@ -588,9 +561,6 @@ contract V3LeveragerModularTest is LocalAlchemistV3Base {
         );
 
         // Alice leverages vault 1
-        vm.startPrank(alice);
-        IERC20(address(mytVault)).approve(address(leverager), 10 ether);
-
         ILeveragerV3.LeverageParams memory params1 = ILeveragerV3.LeverageParams({
             vault: address(vault),
             converter: address(converter),
@@ -602,13 +572,9 @@ contract V3LeveragerModularTest is LocalAlchemistV3Base {
             minSwapOutput: 1,
             minYieldOut: 0
         });
-        leverager.leverage(params1);
-        vm.stopPrank();
+        _leverageFromVault(params1, alice);
 
         // Bob leverages vault 2
-        vm.startPrank(bob);
-        IERC20(address(mytVault)).approve(address(leverager), 15 ether);
-
         ILeveragerV3.LeverageParams memory params2 = ILeveragerV3.LeverageParams({
             vault: address(vault2),
             converter: address(converter),
@@ -620,8 +586,7 @@ contract V3LeveragerModularTest is LocalAlchemistV3Base {
             minSwapOutput: 1,
             minYieldOut: 0
         });
-        leverager.leverage(params2);
-        vm.stopPrank();
+        _leverageFromVault(params2, bob);
 
         // Verify both vaults have independent positions
         (uint256 collateral1, uint256 debt1,) = alchemist.getCDP(vault.getVaultPositionId());
@@ -647,9 +612,6 @@ contract V3LeveragerModularTest is LocalAlchemistV3Base {
         vm.stopPrank();
 
         // Use original adapters
-        vm.startPrank(alice);
-        IERC20(address(mytVault)).approve(address(leverager), 20 ether);
-
         ILeveragerV3.LeverageParams memory params1 = ILeveragerV3.LeverageParams({
             vault: address(vault),
             converter: address(converter),
@@ -661,7 +623,7 @@ contract V3LeveragerModularTest is LocalAlchemistV3Base {
             minSwapOutput: 1,
             minYieldOut: 0
         });
-        leverager.leverage(params1);
+        _leverageFromVault(params1, alice);
 
         // Use alternative adapters for second leverage
         ILeveragerV3.LeverageParams memory params2 = ILeveragerV3.LeverageParams({
@@ -675,8 +637,7 @@ contract V3LeveragerModularTest is LocalAlchemistV3Base {
             minSwapOutput: 1,
             minYieldOut: 0
         });
-        leverager.leverage(params2);
-        vm.stopPrank();
+        _leverageFromVault(params2, alice);
 
         // Both operations should have succeeded
         (uint256 collateral, uint256 debt,) = alchemist.getCDP(vault.getVaultPositionId());
@@ -687,20 +648,24 @@ contract V3LeveragerModularTest is LocalAlchemistV3Base {
     // ============ Events Tests ============
 
     function test_EmitsLeverageExecutedEvent() public {
-        vm.startPrank(alice);
-        IERC20(address(mytVault)).approve(address(leverager), 10 ether);
+        uint256 depositAmount = 10 ether;
 
         ILeveragerV3.LeverageParams memory params = ILeveragerV3.LeverageParams({
             vault: address(vault),
             converter: address(converter),
             flashLoanAdapter: address(flashLoanAdapter),
             swapper: address(swapper),
-            depositAmount: 10 ether,
+            depositAmount: depositAmount,
             flashLoanAmount: 20 ether,
             mintAmount: 25 ether,
             minSwapOutput: 1,
             minYieldOut: 0
         });
+
+        vm.prank(alice);
+        IERC20(address(mytVault)).transfer(address(vault), depositAmount);
+        vm.prank(address(vault));
+        IERC20(address(mytVault)).approve(address(leverager), depositAmount);
 
         vm.expectEmit(true, true, false, false);
         emit ILeveragerV3.LeverageExecuted(
@@ -712,8 +677,8 @@ contract V3LeveragerModularTest is LocalAlchemistV3Base {
             25 ether
         );
 
+        vm.prank(address(vault));
         leverager.leverage(params);
-        vm.stopPrank();
     }
 
     function test_EmitsConverterApprovalEvent() public {
