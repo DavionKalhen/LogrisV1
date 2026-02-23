@@ -1,29 +1,62 @@
 # Logris V1 — Leveraged Yield Vaults for Alchemix V3
 
-Logris creates **leveraged yield positions** on top of Alchemix V3. Users deposit underlying tokens (e.g., WETH), and the protocol amplifies their exposure to self-repaying yield through flash loans and automated position management.
+## Overview
 
-## How It Works
+Logris is a vault protocol that amplifies Alchemix V3's self-repaying yield through automated leveraged positions. Each Logris vault manages a single AlchemistV3 position on behalf of its depositors, cycling through deposit-borrow-swap loops to multiply yield exposure while Alchemix's self-repaying mechanism services the debt.
 
-```
-User deposits WETH
-    |
-    v
-Convert WETH -> MYT (via VaultV2 ERC4626 deposit)
-    |
-    v
-Deposit MYT into AlchemistV3 as collateral
-    |
-    v
-Mint alETH debt against collateral
-    |
-    v
-Swap alETH -> WETH (via Curve)
-    |
-    v
-Repeat with flash loan amplification
-```
+### The Problem
 
-All depositors share a single leveraged position proportionally through ERC4626 vault shares. The yield from the leveraged position accrues to all share holders -- Alchemix's self-repaying mechanism gradually pays down the debt, increasing the net value per share over time.
+Alchemix V3 lets users deposit collateral (e.g., wstETH wrapped as MYT via VaultV2), mint synthetic debt (alETH) against it, and have the yield from their collateral automatically repay that debt over time. A user who wants to maximize this yield can manually leverage: deposit collateral, mint debt, swap debt back to the collateral asset, deposit again, and repeat. This is capital-efficient but operationally complex -- it requires managing position health, handling flash loans, converting between token types, and unwinding the position to withdraw.
+
+### The Solution
+
+Logris abstracts this into an ERC4626 vault. Users deposit WETH and receive vault shares. The vault owner (or whitelisted keepers) trigger leverage operations that:
+
+1. Convert the vault's pooled WETH into MYT (yield tokens) via VaultV2's ERC4626 `deposit()`
+2. Take a flash loan for additional WETH, convert that to MYT as well
+3. Deposit all MYT into AlchemistV3 as collateral on a single shared position
+4. Mint alETH debt against the collateral
+5. Swap alETH back to WETH via Curve to repay the flash loan
+6. Any surplus WETH returns to the vault's deposit pool
+
+The result is a leveraged Alchemist position where the effective yield is multiplied by the leverage ratio. As Alchemix's self-repaying mechanism reduces the debt over time, the net value of the position grows -- and since share price tracks `(collateral - debt - earmarked) / totalShares`, all depositors benefit proportionally.
+
+### Withdrawal and Deleveraging
+
+When a user withdraws, the vault has three paths depending on its state:
+
+- **Pool withdrawal:** If unleveraged WETH sits in the vault pool, the user is paid directly from it.
+- **Collateral withdrawal:** If the pool is insufficient but the Alchemist position has free (non-backing) collateral, the vault withdraws MYT from AlchemistV3, converts it back to WETH via VaultV2's `redeem()`, and pays the user.
+- **Deleverage withdrawal:** If the position is fully leveraged, the vault takes a flash loan, converts to MYT, calls `AlchemistV3.repay()` to reduce debt, withdraws the freed collateral, converts back to WETH, repays the flash loan, and sends the remainder to the user.
+
+The deleverage path is fully deterministic -- it uses VaultV2 `deposit()`/`redeem()` for all conversions rather than DEX swaps, so there is no swap slippage during withdrawal.
+
+### AlchemistV3 Integration Points
+
+| AlchemistV3 Function | When Logris Calls It |
+|----------------------|---------------------|
+| `deposit(amount, recipient, positionId)` | During leverage -- deposits MYT as collateral. Creates position NFT on first call. |
+| `mint(positionId, amount, recipient)` | During leverage -- mints alETH debt against collateral. |
+| `repay(positionId, amount)` | During deleverage -- repays debt with MYT to free collateral. |
+| `withdraw(positionId, amount, recipient)` | During withdrawal paths 2 and 3 -- withdraws MYT collateral. |
+| `poke(positionId)` | Before every deposit and leverage -- syncs accrued yield so share price is accurate. |
+| `depositCap()` / `getTotalDeposited()` | To compute remaining deposit capacity and clamp leverage parameters. |
+| `getMaxBorrowable(positionId)` | To compute borrow capacity for flash loan sizing. |
+| `minimumCollateralization()` | To calculate optimal leverage ratios and deleverage amounts. |
+
+The vault holds the AlchemistV3 position NFT directly. All Alchemist interactions happen through vault callback functions (`vaultDepositYieldTokens`, `vaultMintDebtTokens`, etc.) that are gated by `onlyLeverager`, ensuring only the approved `V3Leverager` contract can trigger position modifications.
+
+### Capacity Handling
+
+The vault adapts to AlchemistV3's capacity constraints:
+
+| Condition | Behavior |
+|-----------|----------|
+| **Deposit cap full** | Reverts -- no collateral can be added |
+| **Deposit cap partially available** | Deposits whatever fits as collateral with no debt, remaining WETH stays in pool for later leverage |
+| **Deposit cap limits flash loan size** | Flash loan is reduced to fit within remaining capacity, resulting in lower leverage ratio |
+| **Borrow capacity limits leverage** | Flash loan is sized to available borrow capacity, mints maximum possible debt |
+| **Ample capacity** | Full leverage -- flash loan maximizes collateral, all available debt is minted and swapped |
 
 ## Architecture
 
