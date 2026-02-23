@@ -144,6 +144,15 @@ All address parameters are validated as non-zero. Slippage must be < 10,000 bps.
 
 Both return the number of vault shares minted. Protected by `nonReentrant`, `whenNotPaused`, and `noConcurrentOperation`. Calls `alchemist.poke()` before share calculation to sync accrued yield.
 
+#### Deposit + Leverage (Combined)
+
+| Function | Description |
+|----------|-------------|
+| `depositAndLeverageAtomic(amount, underlyingSlippageBps, debtSlippageBps, deadline)` | Deposit WETH and leverage in one transaction |
+| `depositAndLeverageAtomic(underlyingSlippageBps, debtSlippageBps, deadline)` payable | Deposit ETH and leverage in one transaction |
+
+Combines `depositUnderlying()` + `leverageAtomic()` into a single atomic call. The deposited amount is leveraged immediately -- only the new deposit is leveraged, any pre-existing pool balance is left untouched. Protected by `whenNotPaused` and `noConcurrentOperation`.
+
 #### Leveraging
 
 | Function | Description |
@@ -538,7 +547,7 @@ forge test -vv
 
 ### Test Suite Summary
 
-**344 non-fork tests passing** across 26 test suites.
+**354 non-fork tests passing** across 26 test suites.
 
 | Category | Test Contract | Description |
 |----------|--------------|-------------|

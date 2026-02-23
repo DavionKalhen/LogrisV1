@@ -662,6 +662,85 @@ contract LeveragedVault is
         emit DepositUnderlying(msg.sender, address($.underlyingToken), msg.value);
     }
 
+    // ============ Deposit + Leverage Functions ============
+
+    /// @inheritdoc ILeveragedVault
+    function depositAndLeverageAtomic(
+        uint256 amount,
+        uint32 _underlyingSlippageBasisPoints,
+        uint32 _debtSlippageBasisPoints,
+        uint256 deadline
+    ) external override whenNotPaused noConcurrentOperation returns (uint256 shares) {
+        if (deadline != 0 && block.timestamp > deadline) revert DeadlineExpired();
+        if (amount == 0) revert ZeroDeposit();
+        if (amount > maxDeposit(msg.sender)) revert DepositExceedsMax();
+        if (_underlyingSlippageBasisPoints >= BASIS_POINTS) revert SlippageTooHigh();
+        if (_debtSlippageBasisPoints >= BASIS_POINTS) revert SlippageTooHigh();
+
+        LeveragedVaultStorage storage $ = _getLeveragedVaultStorage();
+
+        // Sync Alchemist position state so share price reflects accrued yield.
+        if ($.vaultPositionId > 0) {
+            $.alchemist.poke($.vaultPositionId);
+        }
+
+        // Deposit: pull tokens, mint shares
+        shares = previewDeposit(amount);
+        $.underlyingToken.safeTransferFrom(msg.sender, address(this), amount);
+        _mint(msg.sender, shares);
+        emit Deposit(msg.sender, msg.sender, amount, shares);
+        emit DepositUnderlying(msg.sender, address($.underlyingToken), amount);
+
+        // Leverage: compute params and execute
+        (
+            uint256 clampedDeposit,
+            uint256 flashLoanAmount,
+            uint256 underlyingDepositMin,
+            uint256 mintAmount,
+            uint256 debtTradeMin
+        ) = getLeverageParameters(amount, _underlyingSlippageBasisPoints, _debtSlippageBasisPoints);
+
+        _executeLeverage(clampedDeposit, flashLoanAmount, underlyingDepositMin, mintAmount, debtTradeMin);
+    }
+
+    /// @inheritdoc ILeveragedVault
+    function depositAndLeverageAtomic(
+        uint32 _underlyingSlippageBasisPoints,
+        uint32 _debtSlippageBasisPoints,
+        uint256 deadline
+    ) external payable override whenNotPaused noConcurrentOperation returns (uint256 shares) {
+        if (deadline != 0 && block.timestamp > deadline) revert DeadlineExpired();
+        if (msg.value == 0) revert ZeroDeposit();
+        if (msg.value > maxDeposit(msg.sender)) revert DepositExceedsMax();
+        if (_underlyingSlippageBasisPoints >= BASIS_POINTS) revert SlippageTooHigh();
+        if (_debtSlippageBasisPoints >= BASIS_POINTS) revert SlippageTooHigh();
+
+        LeveragedVaultStorage storage $ = _getLeveragedVaultStorage();
+        if (address($.underlyingToken) != address($.wETH)) revert NonWETHVault();
+
+        // Sync Alchemist position state so share price reflects accrued yield.
+        if ($.vaultPositionId > 0) {
+            $.alchemist.poke($.vaultPositionId);
+        }
+
+        // Deposit: wrap ETH, mint shares
+        shares = previewDeposit(msg.value);
+        $.wETH.deposit{value: msg.value}();
+        _depositETH(msg.sender, msg.sender, msg.value, shares);
+        emit DepositUnderlying(msg.sender, address($.underlyingToken), msg.value);
+
+        // Leverage: compute params and execute
+        (
+            uint256 clampedDeposit,
+            uint256 flashLoanAmount,
+            uint256 underlyingDepositMin,
+            uint256 mintAmount,
+            uint256 debtTradeMin
+        ) = getLeverageParameters(msg.value, _underlyingSlippageBasisPoints, _debtSlippageBasisPoints);
+
+        _executeLeverage(clampedDeposit, flashLoanAmount, underlyingDepositMin, mintAmount, debtTradeMin);
+    }
+
     // ============ Leverage Functions ============
 
     /// @inheritdoc ILeveragedVault

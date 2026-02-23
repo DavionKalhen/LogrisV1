@@ -197,6 +197,36 @@ interface ILeveragedVault is IERC4626 {
         uint256 deadline
     ) external;
 
+    // ============ Deposit + Leverage Functions ============
+
+    /// @notice Deposit underlying tokens and immediately leverage in one transaction.
+    /// @dev Convenience function combining depositUnderlying() + leverageAtomic().
+    ///      Computes leverage parameters internally from the deposited amount.
+    /// @param amount Amount of underlying tokens to deposit and leverage
+    /// @param underlyingSlippageBasisPoints Slippage tolerance for underlying operations
+    /// @param debtSlippageBasisPoints Slippage tolerance for debt swap
+    /// @param deadline Timestamp after which the transaction reverts (0 = no deadline)
+    /// @return shares Amount of vault shares minted to caller
+    function depositAndLeverageAtomic(
+        uint256 amount,
+        uint32 underlyingSlippageBasisPoints,
+        uint32 debtSlippageBasisPoints,
+        uint256 deadline
+    ) external returns (uint256 shares);
+
+    /// @notice Deposit ETH and immediately leverage in one transaction.
+    /// @dev Convenience function combining depositUnderlying() payable + leverageAtomic().
+    ///      Wraps ETH to WETH, then deposits and leverages. Only for WETH-based vaults.
+    /// @param underlyingSlippageBasisPoints Slippage tolerance for underlying operations
+    /// @param debtSlippageBasisPoints Slippage tolerance for debt swap
+    /// @param deadline Timestamp after which the transaction reverts (0 = no deadline)
+    /// @return shares Amount of vault shares minted to caller
+    function depositAndLeverageAtomic(
+        uint32 underlyingSlippageBasisPoints,
+        uint32 debtSlippageBasisPoints,
+        uint256 deadline
+    ) external payable returns (uint256 shares);
+
     // ============ Withdraw Functions ============
 
     /// @notice Withdraw underlying tokens with explicit parameters

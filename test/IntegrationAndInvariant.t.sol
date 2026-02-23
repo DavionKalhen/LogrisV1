@@ -283,6 +283,159 @@ contract FullIntegrationTest is LogrisTestBase {
         vm.expectRevert(LeveragedVault.SlippageTooHigh.selector);
         vault.setSlippageParameters(10000, 200);
     }
+
+    // ============ Deposit + Leverage Atomic Tests ============
+
+    function test_DepositAndLeverageAtomic_BasicFlow() public {
+        uint256 amount = 10 ether;
+        underlying.mint(alice, amount);
+
+        vm.startPrank(alice);
+        IERC20(address(underlying)).approve(address(vault), amount);
+        uint256 shares = vault.depositAndLeverageAtomic(amount, 100, 200, 0);
+        vm.stopPrank();
+
+        // Shares minted
+        assertGt(shares, 0, "Should receive shares");
+        assertEq(vault.balanceOf(alice), shares, "Alice should hold shares");
+
+        // Position created with debt
+        uint256 posId = vault.getVaultPositionId();
+        assertGt(posId, 0, "Position should exist");
+        (uint256 collateral, uint256 debt,) = alchemist.getCDP(posId);
+        assertGt(collateral, 0, "Should have collateral");
+        assertGt(debt, 0, "Should have debt from leverage");
+
+        // Pool mostly consumed
+        assertLt(vault.getDepositPoolBalance(), amount, "Pool should be mostly consumed");
+    }
+
+    function test_DepositAndLeverageAtomic_MatchesSeparateCalls() public {
+        // Deploy a second vault for comparison
+        LeveragedVault vault2 = _deployLeveragedVault(
+            address(leverager),
+            address(converter),
+            address(flashLoanAdapter),
+            address(swapper),
+            owner
+        );
+
+        uint256 amount = 10 ether;
+
+        // Vault 1: combined call
+        underlying.mint(alice, amount);
+        vm.startPrank(alice);
+        IERC20(address(underlying)).approve(address(vault), amount);
+        uint256 shares1 = vault.depositAndLeverageAtomic(amount, 100, 200, 0);
+        vm.stopPrank();
+
+        // Vault 2: separate calls
+        underlying.mint(bob, amount);
+        vm.startPrank(bob);
+        IERC20(address(underlying)).approve(address(vault2), amount);
+        uint256 shares2 = vault2.depositUnderlying(amount);
+        vm.stopPrank();
+        vault2.leverageAtomic(amount, 100, 200, 0);
+
+        // Same shares minted (same amount, same first-deposit share price)
+        assertEq(shares1, shares2, "Combined should mint same shares as separate");
+
+        // Same debt created
+        uint256 posId1 = vault.getVaultPositionId();
+        uint256 posId2 = vault2.getVaultPositionId();
+        (, uint256 debt1,) = alchemist.getCDP(posId1);
+        (, uint256 debt2,) = alchemist.getCDP(posId2);
+        assertEq(debt1, debt2, "Same debt should be created");
+    }
+
+    function test_DepositAndLeverageAtomic_WithExistingPoolBalance() public {
+        // First: deposit without leverage
+        uint256 existingAmount = 5 ether;
+        _depositFor(alice, existingAmount);
+        assertEq(vault.getDepositPoolBalance(), existingAmount, "Pool should hold existing deposit");
+
+        // Second: deposit and leverage only the new amount
+        uint256 newAmount = 10 ether;
+        underlying.mint(bob, newAmount);
+        vm.startPrank(bob);
+        IERC20(address(underlying)).approve(address(vault), newAmount);
+        vault.depositAndLeverageAtomic(newAmount, 100, 200, 0);
+        vm.stopPrank();
+
+        // Existing deposit should remain in pool (minus whatever leverage consumed)
+        // The leverage only targets newAmount, so existingAmount should still be in pool
+        assertGe(vault.getDepositPoolBalance(), existingAmount, "Existing pool balance should remain");
+    }
+
+    function test_DepositAndLeverageAtomic_RevertsWhenPaused() public {
+        uint256 amount = 10 ether;
+        underlying.mint(alice, amount);
+
+        vm.prank(owner);
+        vault.pause();
+
+        vm.startPrank(alice);
+        IERC20(address(underlying)).approve(address(vault), amount);
+        vm.expectRevert();
+        vault.depositAndLeverageAtomic(amount, 100, 200, 0);
+        vm.stopPrank();
+    }
+
+    function test_DepositAndLeverageAtomic_RevertsZeroAmount() public {
+        vm.prank(alice);
+        vm.expectRevert(LeveragedVault.ZeroDeposit.selector);
+        vault.depositAndLeverageAtomic(0, 100, 200, 0);
+    }
+
+    function test_DepositAndLeverageAtomic_RevertsDeadlineExpired() public {
+        uint256 amount = 10 ether;
+        underlying.mint(alice, amount);
+
+        // Warp to a known timestamp so we can set an expired deadline
+        vm.warp(1000);
+
+        vm.startPrank(alice);
+        IERC20(address(underlying)).approve(address(vault), amount);
+        vm.expectRevert(LeveragedVault.DeadlineExpired.selector);
+        vault.depositAndLeverageAtomic(amount, 100, 200, 999); // deadline in the past
+        vm.stopPrank();
+    }
+
+    function test_DepositAndLeverageAtomic_RevertsSlippageTooHigh() public {
+        uint256 amount = 10 ether;
+        underlying.mint(alice, amount);
+
+        vm.startPrank(alice);
+        IERC20(address(underlying)).approve(address(vault), amount);
+
+        vm.expectRevert(LeveragedVault.SlippageTooHigh.selector);
+        vault.depositAndLeverageAtomic(amount, 10000, 200, 0);
+
+        vm.expectRevert(LeveragedVault.SlippageTooHigh.selector);
+        vault.depositAndLeverageAtomic(amount, 100, 10000, 0);
+        vm.stopPrank();
+    }
+
+    function test_DepositAndLeverageAtomic_FullCycleWithWithdraw() public {
+        uint256 amount = 10 ether;
+        underlying.mint(alice, amount);
+
+        // Deposit + leverage in one tx
+        vm.startPrank(alice);
+        IERC20(address(underlying)).approve(address(vault), amount);
+        uint256 shares = vault.depositAndLeverageAtomic(amount, 100, 200, 0);
+        vm.stopPrank();
+
+        // Advance block for repay
+        vm.roll(block.number + 1);
+
+        // Withdraw everything
+        vm.prank(alice);
+        uint256 withdrawn = vault.withdrawUnderlyingAtomic(shares, 100, 200, 0);
+        assertGt(withdrawn, 0, "Should withdraw some underlying");
+        assertApproxEqAbs(withdrawn, amount, amount / 10, "Should get back close to deposit");
+        assertEq(vault.balanceOf(alice), 0, "Should have 0 shares after full withdrawal");
+    }
 }
 
 // ============ Invariant Test ============

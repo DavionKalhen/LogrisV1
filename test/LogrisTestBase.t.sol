@@ -175,8 +175,11 @@ abstract contract LogrisTestBase is LocalAlchemistV3Base {
 
     /// @dev Deposits underlying and executes leverage with auto-computed parameters.
     function _depositAndLeverage(address user, uint256 amount) internal returns (uint256 shares) {
-        shares = _depositFor(user, amount);
-        vault.leverageAtomic(amount, 100, 200, 0);
+        underlying.mint(user, amount);
+        vm.startPrank(user);
+        IERC20(address(underlying)).approve(address(vault), amount);
+        shares = vault.depositAndLeverageAtomic(amount, 100, 200, 0);
+        vm.stopPrank();
     }
 
     /// @dev Pause/unpause deposits on AlchemistV3.
