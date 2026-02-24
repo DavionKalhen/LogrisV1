@@ -352,6 +352,162 @@ Token adapter for AlchemistV3 integration. Provides:
 - `unwrap()`: wstETH -> stETH -> WETH via swapper (with `nonReentrant` protection)
 - Slippage baseline uses nominal 1:1 stETH:ETH value, not same-tx spot quotes (prevents oracle manipulation)
 
+## Frontend Integration
+
+The vault exposes two patterns for every operation: **atomic** (one call, vault computes everything) and **explicit** (frontend computes parameters via view function, then submits). The atomic path is simpler; the explicit path gives the frontend control over parameter display and user confirmation.
+
+### Depositing
+
+```javascript
+// Simple ERC20 deposit
+await underlying.approve(vault.address, amount);
+const shares = await vault.depositUnderlying(amount);
+
+// Or deposit ETH directly (auto-wraps to WETH)
+const shares = await vault.depositUnderlying({ value: amount });
+```
+
+Shares are minted at the current exchange rate. Call `vault.convertUnderlyingTokensToShares(amount)` to preview.
+
+### Leveraging (Keeper/Whitelisted)
+
+**Atomic (recommended for most cases):**
+
+```javascript
+// Leverages the full depositAmount from the pool at max leverage
+await vault.leverageAtomic(depositAmount, underlyingSlippageBps, debtSlippageBps, deadline);
+```
+
+**Explicit (for UI parameter display or custom slippage):**
+
+```javascript
+// Step 1: Query the vault for optimal parameters
+const [clampedDeposit, flashLoanAmount, underlyingDepositMin, mintAmount, debtTradeMin] =
+    await vault.getLeverageParameters(depositAmount, underlyingSlippageBps, debtSlippageBps);
+
+// Step 2: Display to user (optional) -- e.g., show flash loan size, expected debt, slippage bounds
+
+// Step 3: Submit with the computed parameters
+await vault.leverage(clampedDeposit, flashLoanAmount, underlyingDepositMin, mintAmount, debtTradeMin, deadline);
+```
+
+Both overloads of `getLeverageParameters` are available -- one takes explicit slippage, the other uses vault defaults:
+
+```javascript
+// Uses vault's configured slippage defaults
+const params = await vault.getLeverageParameters(depositAmount);
+
+// Uses custom slippage
+const params = await vault.getLeverageParameters(depositAmount, 100, 200);
+```
+
+### Deposit + Leverage (Any User)
+
+```javascript
+// One transaction: deposit WETH and leverage at max ratio
+await underlying.approve(vault.address, amount);
+await vault.depositAndLeverageAtomic(amount, underlyingSlippageBps, debtSlippageBps, deadline);
+
+// Or with ETH
+await vault.depositAndLeverageAtomic(underlyingSlippageBps, debtSlippageBps, deadline, { value: amount });
+```
+
+### Withdrawing
+
+**Atomic (recommended):**
+
+```javascript
+await vault.withdrawUnderlyingAtomic(shares, underlyingSlippageBps, debtSlippageBps, deadline);
+```
+
+**Explicit (for UI parameter display):**
+
+```javascript
+// Step 1: Query withdrawal parameters
+const [flashLoanAmount, repayAmount, minUnderlyingOut] =
+    await vault.getWithdrawUnderlyingParameters(shares, underlyingSlippageBps, debtSlippageBps);
+
+// Step 2: Display to user -- e.g., show if deleverage is needed (flashLoanAmount > 0),
+//         expected output, which withdrawal path will be used
+
+// Step 3: Submit
+await vault.withdrawUnderlying(shares, flashLoanAmount, repayAmount, minUnderlyingOut, deadline);
+```
+
+### Reading Vault State
+
+```javascript
+// Share value
+const underlyingValue = await vault.convertSharesToUnderlyingTokens(shares);
+const sharesNeeded = await vault.convertUnderlyingTokensToShares(underlyingAmount);
+
+// Vault position
+const poolBalance = await vault.getDepositPoolBalance();       // Unleveraged WETH in pool
+const collateral = await vault.getVaultDepositedBalance();      // MYT in AlchemistV3
+const debt = await vault.getVaultDebtBalance();                 // alETH debt
+const netValue = await vault.getVaultRedeemableBalance();       // Pool + (collateral - debt - earmarked)
+
+// Capacity
+const depositCap = await vault.getDepositCapacity();            // Remaining Alchemist deposit room
+const borrowCap = await vault.getBorrowCapacity();              // Remaining borrow room
+const freeWithdraw = await vault.getFreeWithdrawCapacity();     // Withdrawable without deleverage
+```
+
+### Deadline Parameter
+
+All leverage and withdraw functions accept a `deadline` parameter (Unix timestamp). Set to `0` to skip deadline enforcement. For production use:
+
+```javascript
+const deadline = Math.floor(Date.now() / 1000) + 300; // 5 minutes from now
+```
+
+### Leverage Ratio Control
+
+All depositors in a vault share a single AlchemistV3 position, so everyone has the same leverage ratio. There is no per-user leverage choice. The leverage ratio is determined by how `leverage()` is called, not by vault configuration.
+
+**Keeper-controlled ratio (single vault):**
+
+The whitelisted keeper controls the leverage ratio by choosing the parameters passed to `leverage()`. The `leverageAtomic()` function always computes maximum leverage, but `leverage()` accepts explicit parameters -- a keeper can compute a smaller flash loan off-chain to target any ratio.
+
+```javascript
+// Get max-leverage parameters as a starting point
+const [clampedDeposit, maxFlashLoan, underlyingDepositMin, maxMint, maxDebtTradeMin] =
+    await vault.getLeverageParameters(depositAmount, underlyingSlippageBps, debtSlippageBps);
+
+// Scale down to target ratio (e.g., 50% of max leverage)
+const targetFlashLoan = maxFlashLoan / 2n;
+const targetMint = maxMint / 2n;
+const targetDebtTradeMin = targetMint * (10000n - debtSlippageBps) / 10000n;
+
+// Recompute underlyingDepositMin for the reduced total
+const targetUnderlyingDepositMin = /* ... scale proportionally ... */;
+
+await vault.leverage(clampedDeposit, targetFlashLoan, targetUnderlyingDepositMin, targetMint, targetDebtTradeMin, deadline);
+```
+
+This approach works today with no code changes. The keeper can implement any strategy -- conservative 2x, aggressive 8x, or dynamically adjusted based on market conditions.
+
+**Multiple vaults with different strategies:**
+
+For distinct leverage tiers (e.g., a "Conservative 2x" vault and an "Aggressive 8x" vault), deploy separate vaults with different keepers or keeper configurations. Each vault operates independently with its own AlchemistV3 position.
+
+Note: the current `LeveragedVaultFactory` enforces one vault per `(yieldToken, alchemist)` pair. To deploy multiple vaults for the same token pair, deploy additional factory instances or clone the implementation directly:
+
+```solidity
+// Option A: Multiple factories
+LeveragedVaultFactory conservativeFactory = new LeveragedVaultFactory(implementation);
+LeveragedVaultFactory aggressiveFactory = new LeveragedVaultFactory(implementation);
+
+address vault2x = conservativeFactory.createVault(MYT, WETH, alchemist, leverager, ...);
+address vault8x = aggressiveFactory.createVault(MYT, WETH, alchemist, leverager, ...);
+
+// Option B: Direct clone (bypass factory)
+address vault = Clones.clone(implementation);
+LeveragedVault(payable(vault)).initialize(MYT, WETH, alchemist, leverager, ...);
+```
+
+Each vault has its own leverage whitelist, so the keeper for the 2x vault can enforce conservative leverage while the 8x vault's keeper maximizes it.
+
 ## Token Flow
 
 ### Leverage Operation
